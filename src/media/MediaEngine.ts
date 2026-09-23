@@ -1,0 +1,495 @@
+import type { FromWorker, MediaInfo, MediaSourceInput, PlaybackState, RenderMode } from '../shared/protocol';
+import { T, Telemetry } from '../shared/telemetry';
+import type { AudioRing } from '../shared/audioRing';
+import { createByteSource } from './source/ByteSource';
+import type { Demuxer, DemuxSink } from './demux/Demuxer';
+import { Mp4Demuxer } from './demux/Mp4Demuxer';
+import { VideoDecodePipe } from './decode/VideoDecodePipe';
+import { AudioDecodePipe } from './decode/AudioDecodePipe';
+import { AudioMasterClock, WallClock, type MediaClock } from './sync/MediaClock';
+import { WebGpuRenderer } from './render/WebGpuRenderer';
+
+/** Network/demux read-ahead window (seconds). Encoded media is cheap to hold. */
+const READ_AHEAD_HIGH = 30;
+const READ_AHEAD_LOW = 20;
+/** Pre-roll needed before (re)starting the clock, to avoid stutter. */
+const START_AUDIO_SECONDS = 0.25;
+const START_VIDEO_FRAMES = 3;
+/** Background service interval: keeps audio fed when rAF is throttled (hidden tab). */
+const SERVICE_INTERVAL_MS = 50;
+/** GPU device-loss recoveries allowed per 30s before giving up. */
+const MAX_GPU_RECOVERIES = 3;
+
+type Post = (msg: FromWorker, transfer?: Transferable[]) => void;
+
+interface LoadedMedia {
+  demuxer: Demuxer;
+  video: VideoDecodePipe | null;
+  audio: AudioDecodePipe | null;
+  clock: MediaClock;
+  info: MediaInfo;
+  demuxEnded: boolean;
+}
+
+/**
+ * Orchestrates the whole media pipeline inside the worker:
+ *
+ *   ByteSource -> Demuxer -> {Video,Audio}DecodePipe -> frame queue / PCM ring
+ *                                                    -> MediaClock -> WebGPU
+ */
+export class MediaEngine implements DemuxSink {
+  private renderer: WebGpuRenderer | null = null;
+  private canvas: OffscreenCanvas | null = null;
+  private telemetry: Telemetry | null = null;
+  private media: LoadedMedia | null = null;
+  private loadGeneration = 0;
+  private state: PlaybackState = 'idle';
+  private wantPlay = false;
+  private renderMode: RenderMode = 'direct';
+  private outputLatency = 0;
+
+  /** Frame currently on screen (kept open so we can redraw on resize/mode change). */
+  private current: VideoFrame | null = null;
+  private needsRedraw = false;
+  /** Show the next decoded frame immediately, regardless of clock (load/seek while paused). */
+  private preroll = true;
+
+  private demandWaiters: (() => void)[] = [];
+  private lastRaf = 0;
+  private fpsWindowStart = 0;
+  private fpsCount = 0;
+  private fps = 0;
+  private presented = 0;
+  private dropped = 0;
+  private serviceTimer: ReturnType<typeof setInterval> | null = null;
+  private gpuRecoveries: number[] = [];
+  private disposed = false;
+
+  constructor(private readonly post: Post) {}
+
+  // =============================================================== commands
+
+  async init(canvas: OffscreenCanvas, telemetrySab: SharedArrayBuffer, width: number, height: number): Promise<void> {
+    this.canvas = canvas;
+    this.telemetry = new Telemetry(telemetrySab);
+    await this.createRenderer();
+    this.renderer?.resize(width, height);
+    this.startLoops();
+  }
+
+  async load(input: MediaSourceInput): Promise<void> {
+    this.unload();
+    const gen = ++this.loadGeneration;
+    this.setState('loading');
+    this.preroll = true;
+
+    const source = createByteSource(input);
+    const demuxer = new Mp4Demuxer(source, this);
+    try {
+      const tracks = await demuxer.open();
+      if (gen !== this.loadGeneration) return demuxer.close();
+
+      let video: VideoDecodePipe | null = null;
+      if (tracks.video) {
+        video = new VideoDecodePipe({
+          onFatal: (e) => this.fatal(`Video decoder: ${e.message}`),
+        });
+        const { fps: _fps, ...videoConfig } = tracks.video;
+        if (!(await video.configure(videoConfig))) {
+          video.close();
+          video = null;
+          this.post({ type: 'error', message: `Video codec ${tracks.video.codec} is not supported on this device`, fatal: !tracks.audio });
+        }
+      }
+
+      let audio: AudioDecodePipe | null = null;
+      if (tracks.audio) {
+        audio = new AudioDecodePipe({
+          onFatal: (e) => this.dropAudio(`Audio decoder: ${e.message}`),
+          onRingCreated: (ring) => this.onRingCreated(ring),
+        });
+        if (!(await audio.configure(tracks.audio))) {
+          audio.close();
+          audio = null;
+          this.post({ type: 'error', message: `Audio codec ${tracks.audio.codec} is not supported; playing muted`, fatal: false });
+        }
+      }
+      if (gen !== this.loadGeneration) return;
+      if (!video && !audio) throw new Error('No playable tracks');
+
+      const info: MediaInfo = {
+        duration: tracks.duration,
+        container: tracks.container,
+        progressive: tracks.progressive,
+        video: tracks.video && video
+          ? { codec: tracks.video.codec, width: tracks.video.codedWidth!, height: tracks.video.codedHeight!, fps: tracks.video.fps, hardware: video.hardware }
+          : null,
+        audio: tracks.audio && audio
+          ? { codec: tracks.audio.codec, sampleRate: tracks.audio.sampleRate, channels: tracks.audio.numberOfChannels }
+          : null,
+      };
+      this.media = {
+        demuxer,
+        video,
+        audio,
+        clock: audio ? new AudioMasterClock(audio) : new WallClock(),
+        info,
+        demuxEnded: false,
+      };
+      this.applyLatency();
+      demuxer.start();
+      this.post({ type: 'media-info', info });
+      this.setState(this.wantPlay ? 'buffering' : 'ready');
+    } catch (e) {
+      demuxer.close();
+      if (gen === this.loadGeneration) this.fatal(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  play(): void {
+    this.wantPlay = true;
+    const m = this.media;
+    if (!m) return;
+    if (this.state === 'ended') this.seek(0);
+    if (this.state !== 'playing') this.setState('buffering');
+  }
+
+  pause(): void {
+    this.wantPlay = false;
+    this.media?.clock.pause();
+    if (this.media && this.state !== 'ended') this.setState('paused');
+  }
+
+  seek(time: number): void {
+    const m = this.media;
+    if (!m) return;
+    const target = Math.max(0, Math.min(time, m.info.duration || time));
+    m.clock.pause();
+    m.video?.reset(target);
+    m.audio?.reset(target);
+    m.clock.seek(target);
+    m.demuxEnded = false;
+    this.resolveDemand(true);
+    m.demuxer.seek(target);
+    this.preroll = true;
+    this.writeTelemetry(target);
+    this.setState(this.wantPlay ? 'buffering' : 'paused');
+  }
+
+  resize(width: number, height: number): void {
+    this.renderer?.resize(width, height);
+    this.needsRedraw = true;
+  }
+
+  setRenderMode(mode: RenderMode): void {
+    this.renderMode = mode;
+    this.renderer?.setMode(mode);
+    this.needsRedraw = true;
+    this.post({ type: 'render-mode', mode });
+  }
+
+  setOutputLatency(seconds: number): void {
+    this.outputLatency = seconds;
+    this.applyLatency();
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    this.unload();
+    if (this.serviceTimer) clearInterval(this.serviceTimer);
+    this.renderer?.destroy();
+    this.renderer = null;
+  }
+
+  // ============================================================== DemuxSink
+
+  onVideoChunk(chunk: EncodedVideoChunk): void {
+    this.media?.video?.push(chunk);
+  }
+
+  onAudioChunk(chunk: EncodedAudioChunk): void {
+    this.media?.audio?.push(chunk);
+  }
+
+  onEndOfStream(): void {
+    const m = this.media;
+    if (!m) return;
+    m.demuxEnded = true;
+    m.video?.markEndOfStream();
+    m.audio?.markEndOfStream();
+  }
+
+  onError(error: Error): void {
+    this.fatal(error.message);
+  }
+
+  demand(): Promise<void> {
+    if (this.readAhead() < READ_AHEAD_HIGH) return Promise.resolve();
+    return new Promise((resolve) => this.demandWaiters.push(resolve));
+  }
+
+  // ================================================================ loops
+
+  private startLoops(): void {
+    const raf = self.requestAnimationFrame?.bind(self);
+    const frame = (now: number) => {
+      this.lastRaf = now;
+      this.tick(true);
+      schedule();
+    };
+    const schedule = () => (raf ? raf(frame) : setTimeout(() => frame(performance.now()), 1000 / 60));
+    schedule();
+
+    // rAF stops entirely in hidden tabs; keep audio flowing and decoders
+    // drained so playback continues seamlessly (and resumes instantly).
+    this.serviceTimer = setInterval(() => {
+      if (performance.now() - this.lastRaf > SERVICE_INTERVAL_MS * 2) this.tick(false);
+    }, SERVICE_INTERVAL_MS);
+  }
+
+  private tick(visible: boolean): void {
+    const m = this.media;
+    if (!m) {
+      if (visible && this.needsRedraw && this.current) this.redraw();
+      return;
+    }
+
+    m.audio?.pump();
+    m.video?.feed();
+    this.updatePlaybackState(m);
+
+    const t = m.clock.now();
+    this.selectFrame(m, t, visible);
+    this.resolveDemand(false);
+    this.writeTelemetry(t);
+  }
+
+  private updatePlaybackState(m: LoadedMedia): void {
+    if (!this.wantPlay) return;
+
+    const videoDone = !m.video || (m.video.drained && m.video.frames.length === 0);
+    const audioDone = !m.audio || m.audio.finished;
+    if (m.demuxEnded && videoDone && audioDone) {
+      m.clock.pause();
+      this.wantPlay = false;
+      this.setState('ended');
+      return;
+    }
+
+    if (this.state === 'playing') {
+      // Starvation -> rebuffer (with hysteresis via the start thresholds).
+      const audioStarved = m.audio && !m.audio.drained && m.audio.bufferedSeconds === 0;
+      const videoStarved = !m.audio && m.video && !m.video.drained && m.video.frames.length === 0;
+      if (audioStarved || videoStarved) {
+        m.clock.pause();
+        this.setState('buffering');
+      }
+      return;
+    }
+
+    if (this.state === 'buffering' || this.state === 'ready' || this.state === 'paused') {
+      const eos = m.demuxEnded;
+      const audioReady = !m.audio || eos || m.audio.drained || m.audio.bufferedSeconds >= START_AUDIO_SECONDS;
+      const videoReady = !m.video || eos || m.video.drained || m.video.frames.length >= START_VIDEO_FRAMES || m.video.decodeQueueSize + m.video.frames.length >= 8;
+      if (audioReady && videoReady) {
+        m.clock.play();
+        this.setState('playing');
+      }
+    }
+  }
+
+  private selectFrame(m: LoadedMedia, t: number, visible: boolean): void {
+    const video = m.video;
+    if (!video) return;
+
+    if (this.preroll) {
+      const first = video.shift();
+      if (first) {
+        this.present(first, visible);
+        this.preroll = false;
+      }
+    } else if (this.state === 'playing' || this.state === 'buffering' || this.state === 'ended') {
+      // Pick the newest frame whose presentation time has arrived. Showing a
+      // frame up to half a frame early centres it on the nearest vsync.
+      const halfFrame = 0.5 / (m.info.video?.fps || 30);
+      let chosen: VideoFrame | undefined;
+      while (video.frames.length > 0 && video.frames[0].timestamp / 1e6 <= t + halfFrame) {
+        if (chosen) {
+          chosen.close();
+          this.dropped++;
+        }
+        chosen = video.shift();
+      }
+      if (chosen) this.present(chosen, visible);
+    }
+
+    if (visible && this.needsRedraw && this.current) this.redraw();
+  }
+
+  private present(frame: VideoFrame, visible: boolean): void {
+    if (this.current) this.releaseFrame(this.current);
+    this.current = frame;
+    if (!visible || !this.renderer) {
+      this.needsRedraw = true;
+      return;
+    }
+    if (!this.renderer.draw(frame)) {
+      this.needsRedraw = true; // GPU lost: repaint once the renderer is rebuilt.
+      return;
+    }
+    this.needsRedraw = false;
+    this.presented++;
+    this.fpsCount++;
+    const now = performance.now();
+    if (now - this.fpsWindowStart >= 1000) {
+      this.fps = (this.fpsCount * 1000) / (now - this.fpsWindowStart);
+      this.fpsCount = 0;
+      this.fpsWindowStart = now;
+    }
+  }
+
+  private releaseFrame(frame: VideoFrame): void {
+    if (this.renderer) this.renderer.release(frame);
+    else frame.close();
+  }
+
+  private redraw(): void {
+    if (!this.renderer || !this.current) return;
+    if (this.renderer.draw(this.current)) this.needsRedraw = false;
+  }
+
+  // ============================================================== helpers
+
+  private readAhead(): number {
+    const m = this.media;
+    return m ? m.demuxer.demuxedUntil - m.clock.now() : 0;
+  }
+
+  private resolveDemand(force: boolean): void {
+    if (this.demandWaiters.length === 0) return;
+    if (!force && this.readAhead() > READ_AHEAD_LOW) return;
+    const waiters = this.demandWaiters;
+    this.demandWaiters = [];
+    for (const w of waiters) w();
+  }
+
+  private onRingCreated(ring: AudioRing): void {
+    this.post({ type: 'audio-ring', sab: ring.sab, sampleRate: ring.sampleRate, channels: ring.channels });
+    if (this.state === 'playing') ring.setPlaying(true);
+  }
+
+  private applyLatency(): void {
+    const clock = this.media?.clock;
+    if (clock instanceof AudioMasterClock) clock.outputLatency = this.outputLatency;
+  }
+
+  /** Audio broke mid-stream: keep watching, muted, on a wall clock. */
+  private dropAudio(message: string): void {
+    const m = this.media;
+    if (!m?.audio) return;
+    const t = m.clock.now();
+    m.audio.close();
+    m.audio = null;
+    const clock = new WallClock();
+    clock.seek(t);
+    if (this.state === 'playing') clock.play();
+    m.clock = clock;
+    this.post({ type: 'error', message: `${message}; continuing without sound`, fatal: false });
+  }
+
+  private writeTelemetry(t: number): void {
+    const m = this.media;
+    const tel = this.telemetry;
+    if (!tel) return;
+    tel.write((v) => {
+      const duration = m?.info.duration ?? 0;
+      v[T.CurrentTime] = duration > 0 ? Math.min(t, duration) : t;
+      v[T.Duration] = duration;
+      v[T.BufferedEnd] = m ? Math.min(m.demuxer.demuxedUntil, duration || Infinity) : 0;
+      v[T.RenderFps] = this.fps;
+      v[T.FramesPresented] = this.presented;
+      v[T.FramesDropped] = this.dropped;
+      v[T.DecodeQueue] = m?.video?.decodeQueueSize ?? 0;
+      v[T.FrameQueue] = m?.video?.frames.length ?? 0;
+      v[T.AudioBufferedMs] = (m?.audio?.bufferedSeconds ?? 0) * 1000;
+      v[T.AvDriftMs] = this.current ? (this.current.timestamp / 1e6 - t) * 1000 : 0;
+      v[T.VideoWidth] = this.current?.displayWidth ?? 0;
+      v[T.VideoHeight] = this.current?.displayHeight ?? 0;
+      const out = this.current && this.renderer ? this.renderer.outputSize(this.current) : [0, 0];
+      v[T.OutputWidth] = out[0];
+      v[T.OutputHeight] = out[1];
+      v[T.AudioUnderruns] = m?.audio?.ring?.underruns ?? 0;
+    });
+  }
+
+  /**
+   * (Re)create the WebGPU renderer. On device loss (driver reset, GPU process
+   * crash, TDR) we rebuild transparently, keeping the previous renderer until
+   * the replacement is ready, with backoff and a retry budget so a flapping
+   * driver can never spin the worker.
+   */
+  private async createRenderer(): Promise<void> {
+    if (!this.canvas || this.disposed) return;
+    try {
+      const renderer = await WebGpuRenderer.create(this.canvas, (reason) => this.onDeviceLost(reason));
+      if (this.disposed) return renderer.destroy();
+      renderer.setMode(this.renderMode);
+      const previous = this.renderer;
+      this.renderer = renderer;
+      previous?.destroy();
+      this.needsRedraw = true;
+      const info = renderer.adapterInfo;
+      this.post({
+        type: 'gpu-ready',
+        adapter: [info.vendor, info.architecture, info.device || info.description].filter(Boolean).join(' ') || 'WebGPU',
+        features: [...renderer.device.features],
+      });
+    } catch (e) {
+      if (!this.renderer) this.fatal(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  private onDeviceLost(reason: string): void {
+    if (this.disposed) return;
+    const now = performance.now();
+    this.gpuRecoveries = this.gpuRecoveries.filter((t) => now - t < 30_000);
+    if (this.gpuRecoveries.length >= MAX_GPU_RECOVERIES) {
+      console.warn('[webgpu] device lost again; recovery budget exhausted:', reason);
+      this.post({ type: 'error', message: 'The GPU keeps resetting; video output paused. Reload the page to retry.', fatal: false });
+      return;
+    }
+    this.gpuRecoveries.push(now);
+    console.warn('[webgpu] device lost, rebuilding renderer:', reason);
+    setTimeout(() => void this.createRenderer(), 200 * this.gpuRecoveries.length);
+  }
+
+  private unload(): void {
+    const m = this.media;
+    this.media = null;
+    this.resolveDemand(true);
+    if (m) {
+      m.clock.pause();
+      m.demuxer.close();
+      m.video?.close();
+      m.audio?.close();
+    }
+    if (this.current) this.releaseFrame(this.current);
+    this.current = null;
+    this.presented = 0;
+    this.dropped = 0;
+    this.writeTelemetry(0);
+  }
+
+  private setState(state: PlaybackState): void {
+    if (state === this.state) return;
+    this.state = state;
+    this.post({ type: 'state', state });
+  }
+
+  private fatal(message: string): void {
+    this.wantPlay = false;
+    this.media?.clock.pause();
+    this.setState('error');
+    this.post({ type: 'error', message, fatal: true });
+  }
+}

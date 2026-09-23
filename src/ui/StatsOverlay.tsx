@@ -1,0 +1,43 @@
+import { useCallback, useRef } from 'react';
+import type { PlayerController, PlayerSnapshot } from '../player/PlayerController';
+import { useFrame } from '../player/usePlayer';
+import { T } from '../shared/telemetry';
+
+/** "Stats for nerds": refreshed 4x per second from shared telemetry. */
+export function StatsOverlay({ controller, snapshot }: { controller: PlayerController; snapshot: PlayerSnapshot }) {
+  const ref = useRef<HTMLPreElement>(null);
+  const lastUpdate = useRef(0);
+  const { info, gpu, renderMode } = snapshot;
+
+  useFrame(
+    controller,
+    useCallback(
+      (t: Float64Array) => {
+        const now = performance.now();
+        if (now - lastUpdate.current < 250 || !ref.current) return;
+        lastUpdate.current = now;
+        const rows: [string, string][] = [
+          ['GPU', gpu ?? '…'],
+          ['Pipeline', renderMode === 'enhanced' ? 'WebGPU compute → enhance graph' : 'WebGPU zero-copy external texture'],
+          ['Video', info?.video ? `${info.video.codec} · ${info.video.hardware ? 'HW' : 'SW'} decode · ${info.video.fps.toFixed(2)} fps` : '—'],
+          ['Audio', info?.audio ? `${info.audio.codec} · ${info.audio.sampleRate} Hz · ${info.audio.channels} ch` : '—'],
+          ['Resolution', `${t[T.VideoWidth]}×${t[T.VideoHeight]} → ${t[T.OutputWidth]}×${t[T.OutputHeight]}`],
+          ['Render', `${t[T.RenderFps].toFixed(1)} fps · ${t[T.FramesPresented]} shown · ${t[T.FramesDropped]} dropped`],
+          ['Queues', `decode ${t[T.DecodeQueue]} · frames ${t[T.FrameQueue]}`],
+          ['Audio buf', `${t[T.AudioBufferedMs].toFixed(0)} ms · ${t[T.AudioUnderruns]} underruns`],
+          ['A/V offset', `${t[T.AvDriftMs] >= 0 ? '+' : ''}${t[T.AvDriftMs].toFixed(1)} ms`],
+          ['Buffered', `${Math.max(0, t[T.BufferedEnd] - t[T.CurrentTime]).toFixed(1)} s ahead`],
+        ];
+        ref.current.textContent = rows.map(([k, v]) => `${k.padEnd(11)} ${v}`).join('\n');
+      },
+      [gpu, info, renderMode],
+    ),
+  );
+
+  return (
+    <pre
+      ref={ref}
+      className="pointer-events-none absolute top-3 left-3 z-20 max-w-[calc(100%-1.5rem)] overflow-hidden rounded-lg bg-black/70 px-3 py-2 font-mono text-[11px] leading-relaxed text-emerald-300 ring-1 ring-white/10 backdrop-blur-md"
+    />
+  );
+}
