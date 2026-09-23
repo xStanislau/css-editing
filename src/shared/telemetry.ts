@@ -23,6 +23,8 @@ export const enum T {
   OutputWidth,
   OutputHeight,
   AudioUnderruns,
+  DisplayHz,
+  PacingJitterMs,
   SLOTS,
 }
 

@@ -19,6 +19,7 @@ import { VideoDecodePipe } from './decode/VideoDecodePipe';
 import { AudioDecodePipe } from './decode/AudioDecodePipe';
 import { AudioMasterClock, WallClock, type MediaClock } from './sync/MediaClock';
 import { WebGpuRenderer } from './render/WebGpuRenderer';
+import { CadenceMonitor, SmoothClock, VsyncEstimator } from './sync/FramePacer';
 
 /** Network/demux read-ahead window (seconds). Encoded media is cheap to hold. */
 const READ_AHEAD_HIGH = 30;
@@ -82,6 +83,10 @@ export class MediaEngine implements DemuxSink {
   private view: ViewSettings = DEFAULT_VIEW;
   private loop: LoopRange | null = null;
   private lastSeekTarget = 0;
+  // Frame pacing (see FramePacer.ts).
+  private readonly vsync = new VsyncEstimator();
+  private readonly smoothClock = new SmoothClock();
+  private readonly cadence = new CadenceMonitor();
   /** Presented/dropped counters at the start of the auto-degrade window. */
   private degradeWindow = { start: 0, presented: 0, dropped: 0 };
 
@@ -307,7 +312,7 @@ export class MediaEngine implements DemuxSink {
     const raf = self.requestAnimationFrame?.bind(self);
     const frame = (now: number) => {
       this.lastRaf = now;
-      this.tick(true);
+      this.tick(true, now);
       schedule();
     };
     const schedule = () => (raf ? raf(frame) : setTimeout(() => frame(performance.now()), 1000 / 60));
@@ -320,7 +325,8 @@ export class MediaEngine implements DemuxSink {
     }, SERVICE_INTERVAL_MS);
   }
 
-  private tick(visible: boolean): void {
+  /** `rafTime` is the vsync timestamp when called from requestAnimationFrame. */
+  private tick(visible: boolean, rafTime?: number): void {
     const m = this.media;
     if (!m) {
       if (visible && this.needsRedraw && this.current) this.redraw();
@@ -336,7 +342,7 @@ export class MediaEngine implements DemuxSink {
       this.seek(this.loop.a);
       t = this.loop.a;
     }
-    this.selectFrame(m, t, visible);
+    this.selectFrame(m, t, visible, rafTime);
     if (visible) this.checkAutoDegrade();
     this.resolveDemand(false);
     this.writeTelemetry(t);
@@ -376,7 +382,7 @@ export class MediaEngine implements DemuxSink {
     }
   }
 
-  private selectFrame(m: LoadedMedia, t: number, visible: boolean): void {
+  private selectFrame(m: LoadedMedia, t: number, visible: boolean, rafTime?: number): void {
     const video = m.video;
     if (!video) return;
 
@@ -387,18 +393,31 @@ export class MediaEngine implements DemuxSink {
         this.preroll = false;
       }
     } else if (this.state === 'playing' || this.state === 'buffering' || this.state === 'ended') {
-      // Pick the newest frame whose presentation time has arrived. Showing a
-      // frame up to half a frame early centres it on the nearest vsync.
-      const halfFrame = 0.5 / (m.info.video?.fps || 30);
+      let target: number;
+      let displayAt: number | undefined;
+      if (visible && rafTime !== undefined) {
+        // Paced: smooth the bursty audio clock and aim at the vsync this
+        // frame will actually appear on.
+        this.vsync.tick(rafTime);
+        const interval = this.vsync.interval;
+        target = this.smoothClock.sample(t, rafTime, this.state === 'playing') + interval / 1000 + 0.001;
+        displayAt = rafTime + interval;
+      } else {
+        // Hidden tab / no vsync: nothing is displayed, just keep the queue moving.
+        target = t + 0.5 / (m.info.video?.fps || 30);
+      }
       let chosen: VideoFrame | undefined;
-      while (video.frames.length > 0 && video.frames[0].timestamp / 1e6 <= t + halfFrame) {
+      while (video.frames.length > 0 && video.frames[0].timestamp / 1e6 <= target) {
         if (chosen) {
           chosen.close();
           this.dropped++;
         }
         chosen = video.shift();
       }
-      if (chosen) this.present(chosen, visible);
+      if (chosen) {
+        if (displayAt !== undefined && this.state === 'playing') this.cadence.present(chosen.timestamp / 1e6, displayAt);
+        this.present(chosen, visible);
+      }
     }
 
     if (visible && this.needsRedraw && this.current) this.redraw();
@@ -511,7 +530,10 @@ export class MediaEngine implements DemuxSink {
       v[T.DecodeQueue] = m?.video?.decodeQueueSize ?? 0;
       v[T.FrameQueue] = m?.video?.frames.length ?? 0;
       v[T.AudioBufferedMs] = (m?.audio?.bufferedSeconds ?? 0) * 1000;
-      v[T.AvDriftMs] = this.current ? (this.current.timestamp / 1e6 - t) * 1000 : 0;
+      // On screen vs heard, at the moment the frame is actually displayed (next vsync).
+      v[T.AvDriftMs] = this.current ? (this.current.timestamp / 1e6 - t - this.vsync.interval / 1000) * 1000 : 0;
+      v[T.DisplayHz] = this.vsync.hz;
+      v[T.PacingJitterMs] = this.cadence.jitterMs(this.vsync.interval);
       v[T.VideoWidth] = this.current?.displayWidth ?? 0;
       v[T.VideoHeight] = this.current?.displayHeight ?? 0;
       const out = this.current && this.renderer ? this.renderer.outputSize(this.current) : [0, 0];
@@ -584,6 +606,9 @@ export class MediaEngine implements DemuxSink {
   private setState(state: PlaybackState): void {
     if (state === this.state) return;
     this.state = state;
+    // Any discontinuity invalidates the smoothed clock and cadence history.
+    this.smoothClock.reset();
+    this.cadence.reset();
     this.post({ type: 'state', state });
   }
 

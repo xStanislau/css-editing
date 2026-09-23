@@ -23,6 +23,7 @@ export function StatsOverlay({ controller, snapshot }: { controller: PlayerContr
           ['Audio', info?.audio ? `${info.audio.codec} · ${info.audio.sampleRate} Hz · ${info.audio.channels} ch` : '—'],
           ['Resolution', `${t[T.VideoWidth]}×${t[T.VideoHeight]} → ${t[T.OutputWidth]}×${t[T.OutputHeight]}`],
           ['Render', `${t[T.RenderFps].toFixed(1)} fps · ${t[T.FramesPresented]} shown · ${t[T.FramesDropped]} dropped`],
+          ['Pacing', `${t[T.DisplayHz].toFixed(0)} Hz display · ${t[T.PacingJitterMs] < 1 ? 'smooth' : `jitter ${t[T.PacingJitterMs].toFixed(1)} ms`}`],
           ['Queues', `decode ${t[T.DecodeQueue]} · frames ${t[T.FrameQueue]}`],
           ['Audio buf', `${t[T.AudioBufferedMs].toFixed(0)} ms · ${t[T.AudioUnderruns]} underruns`],
           ['A/V offset', `${t[T.AvDriftMs] >= 0 ? '+' : ''}${t[T.AvDriftMs].toFixed(1)} ms`],

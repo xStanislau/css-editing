@@ -30,6 +30,7 @@ read cursor is the master clock.
 | Timing | Edit lists are applied, so B-frame delay, AAC priming and Opus pre-skip are removed, priming samples are dropped, and tracks line up exactly. |
 | Containers | **MP4** (mp4box.js) and **MKV/WebM** (our own streaming parser): lacing, live WebM with unknown sizes, Cues-based seeking with a bitrate-estimate fallback, Opus CodecDelay, header stripping. The container is detected from its magic bytes. |
 | Startup | Progressive parsing shows the first frame before the download finishes. `moov`-at-end files jump straight to the index with HTTP Range requests. |
+| Frame pacing | The audio clock advances in ~10 ms bursts, so a PLL smooths it. Frames are chosen for the vsync they will actually land on, using the measured refresh rate. The result is a clean 3:2 cadence for 24p on 60 Hz and a perfect 5:5 on 120 Hz, verified by a simulation test. Pacing jitter shows in the stats overlay. |
 | Seeking | The in-flight request is aborted and reopened at the keyframe offset. Pre-roll frames are decoded but hidden, so the landing is frame-accurate. The last frame stays on screen (no black flash), and scrubbing is coalesced to one seek per display frame. |
 | Resilience | Hidden tabs keep audio fed from a timer when rAF stops. Lost GPU devices are rebuilt with backoff and a retry budget. Undecodable audio falls back to a muted wall clock. When audio ends before video, a wall-clock tail finishes the video. |
 
