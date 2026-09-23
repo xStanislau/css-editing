@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState, type DragEvent, type ReactNod
 import { usePlayer } from '../player/usePlayer';
 import type { PlayerController, PlayerSnapshot } from '../player/PlayerController';
 import type { MediaSourceInput } from '../shared/protocol';
-import { T } from '../shared/telemetry';
 import { SeekBar } from './SeekBar';
 import { TimeDisplay } from './TimeDisplay';
 import { StatsOverlay } from './StatsOverlay';
@@ -200,7 +199,7 @@ export function VideoPlayer({ onReady }: { onReady?: (player: VideoPlayerHandle)
       {!hasMedia && snap.state !== 'loading' && (
         <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 text-white/60">
           <UploadIcon className="size-10" />
-          <p className="text-sm">Drop an MP4 here, or pick a source below</p>
+          <p className="text-sm">Drop an MP4, MKV or WebM here, or pick a source below</p>
         </div>
       )}
 
@@ -437,7 +436,7 @@ function handleKey(
     default:
       // 0-9 jump to 0%..90%, like every major player.
       if (/^[0-9]$/.test(key)) {
-        player.seek((Number(key) / 10) * player.readTelemetry()[T.Duration]);
+        player.seek((Number(key) / 10) * player.duration());
         return true;
       }
       return false;

@@ -20,7 +20,7 @@ export function SourceBar({ onLoad }: { onLoad: (source: MediaSourceInput) => vo
         type="url"
         value={url}
         onChange={(e) => setUrl(e.target.value)}
-        placeholder="https://… .mp4 (CORS + Range enabled)"
+        placeholder="https://… .mp4 / .mkv / .webm (CORS + Range enabled)"
         className="min-w-0 flex-1 rounded-xl bg-white/5 px-4 py-2.5 text-sm text-white ring-1 ring-white/10 outline-none placeholder:text-white/35 focus:ring-accent"
       />
       <div className="flex gap-2">
@@ -45,7 +45,7 @@ export function SourceBar({ onLoad }: { onLoad: (source: MediaSourceInput) => vo
       <input
         ref={fileRef}
         type="file"
-        accept="video/mp4,video/quicktime,.mp4,.m4v,.mov"
+        accept="video/mp4,video/quicktime,video/x-matroska,video/webm,.mp4,.m4v,.mov,.mkv,.webm"
         hidden
         onChange={(e) => {
           const file = e.target.files?.[0];

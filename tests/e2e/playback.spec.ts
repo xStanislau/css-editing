@@ -50,3 +50,15 @@ test('reports unsupported media instead of failing silently', async ({ page }) =
   await page.getByRole('button', { name: 'Load URL' }).click();
   await expect(page.locator('.bg-red-950\\/90')).toBeVisible({ timeout: 15_000 });
 });
+
+test('plays Matroska (MKV) and seeks through its Cues', async ({ page }) => {
+  await page.goto('/');
+  await page.getByPlaceholder(/https:/).fill('http://localhost:4173/samples/sample-vp9-opus.mkv');
+  await page.getByRole('button', { name: 'Load URL' }).click();
+  await expect(page.getByRole('button', { name: 'Play', exact: true }).first()).toBeVisible({ timeout: 15_000 });
+  await page.getByRole('button', { name: 'Play', exact: true }).first().click();
+  await expect.poll(() => currentSeconds(page), { timeout: 10_000 }).toBeGreaterThanOrEqual(2);
+  await page.keyboard.press('7');
+  await expect.poll(() => currentSeconds(page), { timeout: 5_000 }).toBeGreaterThanOrEqual(8);
+  await expect(page.getByRole('button', { name: 'Replay' }).first()).toBeVisible({ timeout: 20_000 });
+});

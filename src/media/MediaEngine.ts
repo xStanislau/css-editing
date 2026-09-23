@@ -14,7 +14,7 @@ import { T, Telemetry } from '../shared/telemetry';
 import type { AudioRing } from '../shared/audioRing';
 import { createByteSource } from './source/ByteSource';
 import type { Demuxer, DemuxSink } from './demux/Demuxer';
-import { Mp4Demuxer } from './demux/Mp4Demuxer';
+import { createDemuxer } from './demux/createDemuxer';
 import { VideoDecodePipe } from './decode/VideoDecodePipe';
 import { AudioDecodePipe } from './decode/AudioDecodePipe';
 import { AudioMasterClock, WallClock, type MediaClock } from './sync/MediaClock';
@@ -105,8 +105,10 @@ export class MediaEngine implements DemuxSink {
     this.preroll = true;
 
     const source = createByteSource(input);
-    const demuxer = new Mp4Demuxer(source, this);
+    let demuxer: Demuxer | null = null;
     try {
+      demuxer = await createDemuxer(source, this);
+      if (gen !== this.loadGeneration) return;
       const tracks = await demuxer.open();
       if (gen !== this.loadGeneration) return demuxer.close();
 
@@ -162,7 +164,7 @@ export class MediaEngine implements DemuxSink {
       this.post({ type: 'media-info', info });
       this.setState(this.wantPlay ? 'buffering' : 'ready');
     } catch (e) {
-      demuxer.close();
+      demuxer?.close();
       if (gen === this.loadGeneration) this.fatal(e instanceof Error ? e.message : String(e));
     }
   }

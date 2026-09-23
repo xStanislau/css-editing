@@ -165,8 +165,13 @@ export class PlayerController {
     else this.play();
   }
 
+  /** Media duration; falls back to media-info before the first telemetry tick. */
+  duration(): number {
+    return this.readTelemetry()[T.Duration] || this.snapshot.info?.duration || 0;
+  }
+
   seek(time: number): void {
-    const duration = this.readTelemetry()[T.Duration];
+    const duration = this.duration();
     const target = Math.max(0, duration ? Math.min(time, duration) : time);
     this.pendingSeek = { time: target, until: performance.now() + 400 };
     this.send({ type: 'seek', time: target });

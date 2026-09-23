@@ -1,65 +1,10 @@
-import { readFileSync } from 'node:fs';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { editListOffset, Mp4Demuxer, webCodecsCodec } from '../../src/media/demux/Mp4Demuxer';
-import type { DemuxSink } from '../../src/media/demux/Demuxer';
-import type { ByteSource } from '../../src/media/source/ByteSource';
+import { collectingSink, installFakeWebCodecs, loadFile, memorySource } from './helpers';
 
-// Node has no WebCodecs: a minimal stand-in that keeps what the tests inspect.
-class FakeChunk {
-  type: string;
-  timestamp: number;
-  duration: number;
-  byteLength: number;
-  constructor(init: { type: string; timestamp: number; duration: number; data: Uint8Array }) {
-    this.type = init.type;
-    this.timestamp = init.timestamp;
-    this.duration = init.duration;
-    this.byteLength = init.data.byteLength;
-  }
-}
-beforeAll(() => {
-  Object.assign(globalThis, { EncodedVideoChunk: FakeChunk, EncodedAudioChunk: FakeChunk });
-});
+beforeAll(installFakeWebCodecs);
 
-/** In-memory source that streams in small pieces and records every (re)open. */
-function memorySource(bytes: Uint8Array, piece = 32 * 1024) {
-  const opens: number[] = [];
-  const source: ByteSource = {
-    size: bytes.byteLength,
-    name: 'memory.mp4',
-    async open(offset) {
-      opens.push(offset);
-      let pos = offset;
-      return new ReadableStream<Uint8Array>({
-        pull(c) {
-          if (pos >= bytes.byteLength) return c.close();
-          c.enqueue(bytes.slice(pos, pos + piece));
-          pos += piece;
-        },
-      }).getReader();
-    },
-  };
-  return { source, opens };
-}
-
-function collectingSink() {
-  const video: FakeChunk[] = [];
-  const audio: FakeChunk[] = [];
-  let ended!: () => void;
-  const done = new Promise<void>((r) => (ended = r));
-  const sink: DemuxSink = {
-    onVideoChunk: (c) => video.push(c as unknown as FakeChunk),
-    onAudioChunk: (c) => audio.push(c as unknown as FakeChunk),
-    onEndOfStream: () => ended(),
-    onError: (e) => {
-      throw e;
-    },
-    demand: () => Promise.resolve(),
-  };
-  return { sink, video, audio, done };
-}
-
-const load = (name: string) => new Uint8Array(readFileSync(new URL(`../../public/samples/${name}`, import.meta.url)));
+const load = (name: string) => loadFile(`public/samples/${name}`);
 
 async function demuxAll(name: string) {
   const { source, opens } = memorySource(load(name));

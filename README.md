@@ -28,6 +28,7 @@ read cursor is the master clock.
 | Render | Zero-copy `importExternalTexture`, which does YUV→RGB in the sampler. It uses one quad and one bind group per frame. The canvas is sized in device pixels via `devicePixelContentBoxSize`, so the compositor never rescales it. |
 | A/V sync | Audio drives the clock: `mediaTime = anchor + (readCursor − anchorCursor) / sampleRate − outputLatency`. When the network stalls, the worklet starves, the clock stops and video waits. Bluetooth latency is compensated. |
 | Timing | Edit lists are applied, so B-frame delay, AAC priming and Opus pre-skip are removed, priming samples are dropped, and tracks line up exactly. |
+| Containers | **MP4** (mp4box.js) and **MKV/WebM** (our own streaming parser): lacing, live WebM with unknown sizes, Cues-based seeking with a bitrate-estimate fallback, Opus CodecDelay, header stripping. The container is detected from its magic bytes. |
 | Startup | Progressive parsing shows the first frame before the download finishes. `moov`-at-end files jump straight to the index with HTTP Range requests. |
 | Seeking | The in-flight request is aborted and reopened at the keyframe offset. Pre-roll frames are decoded but hidden, so the landing is frame-accurate. The last frame stays on screen (no black flash), and scrubbing is coalesced to one seek per display frame. |
 | Resilience | Hidden tabs keep audio fed from a timer when rAF stops. Lost GPU devices are rebuilt with backoff and a retry budget. Undecodable audio falls back to a muted wall clock. When audio ends before video, a wall-clock tail finishes the video. |
@@ -73,7 +74,8 @@ src/
     media.worker.ts  entry / message router
     MediaEngine.ts   orchestration, state machine, buffering, frame selection
     source/          ByteSource: HTTP Range or File, random access
-    demux/           Demuxer interface + Mp4Demuxer (mp4box.js)
+    demux/           Demuxer interface, Mp4Demuxer (mp4box.js), MkvDemuxer (EBML),
+                     codec-string builders, container sniffing
     decode/          VideoDecodePipe / AudioDecodePipe with backpressure
     sync/            AudioMasterClock, WallClock
     render/          WebGpuRenderer, EnhanceGraph, WGSL shaders
@@ -123,7 +125,6 @@ Reference ports: [SegaraRai/anime4k-wgpu](https://github.com/SegaraRai/anime4k-w
 
 - Playback rate (needs a WSOLA/phase-vocoder time-stretch in the worklet)
 - Fragmented MP4 over HLS/DASH (a new `Demuxer`; the rest of the pipeline is unchanged)
-- Rust/WASM demuxer for MKV/WebM behind the same `Demuxer` interface
 - HDR (PQ/HLG) with `display-p3` / `rgba16float` canvas and tone mapping
 - Thumbnail previews on the seek bar from a second low-res decoder
 
