@@ -76,3 +76,16 @@ describe('editListOffset', () => {
     expect(editListOffset({ timescale: 48000, edits: [e(500, -1), e(12000, 0)] }, 1000)).toBeCloseTo(0.5);
   });
 });
+
+describe('Mp4Demuxer keyframe index', () => {
+  it('lists sync samples and reads one keyframe independently', async () => {
+    const { demuxer } = await demuxAll('sample-vp9-opus.mp4');
+    const times = demuxer.keyframeTimes();
+    expect(times.length).toBe(6); // GOP of 60 frames at 30fps over 12s
+    expect(times[1]).toBeCloseTo(2, 2);
+    const chunk = (await demuxer.readKeyframe(3)) as unknown as { type: string; timestamp: number; data: Uint8Array };
+    expect(chunk.type).toBe('key');
+    expect(chunk.timestamp / 1e6).toBeCloseTo(6, 2);
+    expect(chunk.data.byteLength).toBeGreaterThan(1000);
+  });
+});

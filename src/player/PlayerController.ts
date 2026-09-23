@@ -34,6 +34,7 @@ export interface PlayerSnapshot {
 const MAX_ZOOM = 8;
 
 type FrameListener = (t: Float64Array) => void;
+type PreviewListener = (bitmap: ImageBitmap, time: number) => void;
 
 /**
  * UI-thread facade over the media worker.
@@ -80,6 +81,8 @@ export class PlayerController {
    * reading the stale playhead.
    */
   private pendingSeek: { time: number; until: number } | null = null;
+  private readonly previewListeners = new Set<PreviewListener>();
+  private previewSeq = 0;
 
   constructor(host: HTMLElement) {
     // The canvas is created imperatively: transferControlToOffscreen() is a
@@ -258,6 +261,19 @@ export class PlayerController {
     this.send({ type: 'set-view', view: clamped });
   }
 
+  // ------------------------------------------------------ seek previews
+
+  /** Ask for a real-frame preview at `time`; only the latest answer is delivered. */
+  requestPreview(time: number): void {
+    this.send({ type: 'preview', id: ++this.previewSeq, time });
+  }
+
+  /** Receive preview bitmaps; the listener must draw synchronously (the bitmap is closed after). */
+  onPreview(fn: PreviewListener): () => void {
+    this.previewListeners.add(fn);
+    return () => this.previewListeners.delete(fn);
+  }
+
   // ------------------------------------------------------ precision tools
 
   stepFrame(direction: 1 | -1): void {
@@ -342,6 +358,12 @@ export class PlayerController {
         break;
       case 'snapshot':
         this.downloadSnapshot(msg.blob, msg.time);
+        break;
+      case 'preview':
+        if (msg.bitmap) {
+          if (msg.id === this.previewSeq) for (const fn of this.previewListeners) fn(msg.bitmap, msg.time);
+          msg.bitmap.close();
+        }
         break;
     }
   }

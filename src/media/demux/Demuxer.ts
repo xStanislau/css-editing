@@ -40,5 +40,15 @@ export interface Demuxer {
   seek(time: number): number;
   /** Seconds of media demuxed ahead (end of the furthest delivered sample). */
   readonly demuxedUntil: number;
+  /**
+   * Video keyframe times (seconds, ascending) for seek-bar previews. May be
+   * empty until the index is known (e.g. MKV Cues still loading).
+   */
+  keyframeTimes(): number[];
+  /**
+   * Fetch just the bytes of keyframe `index` with an independent request,
+   * without disturbing playback streaming.
+   */
+  readKeyframe(index: number): Promise<EncodedVideoChunk | null>;
   close(): void;
 }

@@ -65,6 +65,8 @@ export type ToWorker =
   | { type: 'step-frame'; direction: 1 | -1 }
   /** Render the current frame (with enhancement + picture settings) to PNG. */
   | { type: 'snapshot' }
+  /** Seek-bar preview at `time`; answered with a `preview` message carrying the same id. */
+  | { type: 'preview'; id: number; time: number }
   /** Output latency reported by the AudioContext, so A/V sync matches what the user hears. */
   | { type: 'audio-latency'; seconds: number }
   | { type: 'dispose' };
@@ -79,6 +81,8 @@ export type FromWorker =
   | { type: 'state'; state: PlaybackState }
   | { type: 'render-mode'; mode: RenderMode }
   | { type: 'snapshot'; blob: Blob; time: number }
+  /** Real decoded keyframe for the seek-bar tooltip (null if unavailable). */
+  | { type: 'preview'; id: number; time: number; bitmap: ImageBitmap | null }
   /** Informational message (e.g. automatic quality change), not an error. */
   | { type: 'notice'; message: string }
   | { type: 'error'; message: string; fatal: boolean };

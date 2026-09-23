@@ -135,6 +135,93 @@ export class MkvDemuxer implements Demuxer {
     return actual;
   }
 
+  keyframeTimes(): number[] {
+    return this.video ? this.cues.map((c) => c.time) : [];
+  }
+
+  /**
+   * Fetch the first video keyframe of the cluster that cue `index` points
+   * at, with its own request (playback streaming is unaffected).
+   */
+  async readKeyframe(index: number): Promise<EncodedVideoChunk | null> {
+    const cue = this.cues[index];
+    const video = this.video;
+    if (!cue || !video) return null;
+    const ac = new AbortController();
+    let buf = new Uint8Array(0);
+    try {
+      const reader = await this.source.open(cue.position, ac.signal);
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (value) {
+          const next = new Uint8Array(buf.length + value.length);
+          next.set(buf);
+          next.set(value, buf.length);
+          buf = next;
+        }
+        const found = this.keyframeInCluster(buf, video);
+        if (found !== undefined) {
+          reader.cancel().catch(() => {});
+          return found;
+        }
+        if (done || buf.length > MAX_BUFFERED_ELEMENT) return null;
+      }
+    } catch {
+      return null;
+    } finally {
+      ac.abort();
+    }
+  }
+
+  /** Scan a buffered cluster prefix. `undefined` = need more bytes. */
+  private keyframeInCluster(buf: Uint8Array, video: MkvTrack): EncodedVideoChunk | null | undefined {
+    const cluster = readHeader(buf, 0);
+    if (!cluster) return undefined;
+    if (cluster.id !== ID.Cluster) return null;
+    let pos = cluster.headerLength;
+    let clusterTime = 0;
+    for (;;) {
+      const h = readHeader(buf, pos);
+      if (!h) return undefined;
+      if (h.size === UNKNOWN_SIZE || TOP_LEVEL.has(h.id)) return null;
+      const dataStart = pos + h.headerLength;
+      const end = dataStart + h.size;
+      if (end > buf.length) return undefined;
+      const data = buf.subarray(dataStart, end);
+      if (h.id === ID.Timecode) clusterTime = readUint(data, 0, data.length);
+      let block: Uint8Array | undefined;
+      let key = false;
+      if (h.id === ID.SimpleBlock) {
+        block = data;
+        key = true; // checked via flags below
+      } else if (h.id === ID.BlockGroup) {
+        let ref = false;
+        for (const c of children(data)) {
+          if (c.id === ID.Block) block = data.subarray(c.data, c.data + c.size);
+          else if (c.id === ID.ReferenceBlock) ref = true;
+        }
+        key = !ref;
+      }
+      if (block) {
+        const { value: track, length } = readVint(block, 0);
+        const flags = block[length + 2];
+        if (track === video.number && (h.id === ID.SimpleBlock ? (flags & 0x80) !== 0 : key)) {
+          const relative = ((block[length] << 24) >> 16) | block[length + 1];
+          let frame = splitLaces(block, length + 3, (flags >> 1) & 3)[0];
+          if (video.stripPrefix) {
+            const joined = new Uint8Array(video.stripPrefix.length + frame.length);
+            joined.set(video.stripPrefix);
+            joined.set(frame, video.stripPrefix.length);
+            frame = joined;
+          }
+          const tsNs = (clusterTime + relative) * this.timecodeScale - video.codecDelay;
+          return new EncodedVideoChunk({ type: 'key', timestamp: tsNs / 1000, data: frame.slice() });
+        }
+      }
+      pos = end;
+    }
+  }
+
   close(): void {
     this.closed = true;
     this.generation++;

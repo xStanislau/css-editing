@@ -1,17 +1,50 @@
-import { useCallback, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import type { PlayerController, PlayerSnapshot } from '../player/PlayerController';
 import { useFrame } from '../player/usePlayer';
 import { T } from '../shared/telemetry';
 import { formatTime } from './format';
 
+const PREVIEW_W = 192;
+
 /**
  * Seek bar driven straight from the telemetry SharedArrayBuffer at display
  * refresh rate. Progress is applied as a compositor-only transform through a
  * CSS variable, so it never triggers React renders or layout.
+ *
+ * Hovering shows a real decoded frame (from the worker's preview decoder)
+ * above the time label.
  */
-export function SeekBar({ controller, loop, duration }: { controller: PlayerController; loop?: PlayerSnapshot['loop']; duration?: number }) {
+export function SeekBar({
+  controller,
+  loop,
+  duration,
+  aspect = 16 / 9,
+}: {
+  controller: PlayerController;
+  loop?: PlayerSnapshot['loop'];
+  duration?: number;
+  aspect?: number;
+}) {
   const rootRef = useRef<HTMLDivElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
+  const labelRef = useRef<HTMLSpanElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const previewTime = useRef<number | null>(null);
+  const previewScheduled = useRef(false);
+  const previewH = Math.round(PREVIEW_W / aspect);
+
+  // Paint preview bitmaps as they arrive.
+  useEffect(
+    () =>
+      controller.onPreview((bitmap) => {
+        const canvas = canvasRef.current;
+        const ctx = canvas?.getContext('2d');
+        if (!canvas || !ctx) return;
+        ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+        canvas.dataset.ready = '1';
+      }),
+    [controller],
+  );
   const dragFraction = useRef<number | null>(null);
   const pendingSeek = useRef<number | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -50,11 +83,25 @@ export function SeekBar({ controller, loop, duration }: { controller: PlayerCont
 
   const showTooltip = (clientX: number) => {
     const tip = tooltipRef.current;
-    const d = controller.readTelemetry()[T.Duration];
-    if (!tip || !d) return;
+    const root = rootRef.current;
+    const d = controller.duration();
+    if (!tip || !root || !d) return;
     const f = fractionAt(clientX);
-    tip.textContent = formatTime(f * d);
-    tip.style.left = `${f * 100}%`;
+    if (labelRef.current) labelRef.current.textContent = formatTime(f * d);
+    // Keep the tooltip inside the bar horizontally.
+    const width = root.clientWidth;
+    const half = tip.offsetWidth / 2;
+    tip.style.left = `${Math.min(width - half, Math.max(half, f * width))}px`;
+
+    // One preview request per display frame, for the latest pointer position.
+    previewTime.current = f * d;
+    if (!previewScheduled.current) {
+      previewScheduled.current = true;
+      requestAnimationFrame(() => {
+        previewScheduled.current = false;
+        if (previewTime.current !== null) controller.requestPreview(previewTime.current);
+      });
+    }
   };
 
   return (
@@ -71,6 +118,10 @@ export function SeekBar({ controller, loop, duration }: { controller: PlayerCont
         dragFraction.current = fractionAt(e.clientX);
         setDragging(true);
         scheduleSeek(dragFraction.current);
+      }}
+      onPointerLeave={() => {
+        previewTime.current = null;
+        if (canvasRef.current) delete canvasRef.current.dataset.ready;
       }}
       onPointerMove={(e) => {
         showTooltip(e.clientX);
@@ -106,8 +157,17 @@ export function SeekBar({ controller, loop, duration }: { controller: PlayerCont
       />
       <div
         ref={tooltipRef}
-        className="pointer-events-none absolute bottom-6 -translate-x-1/2 rounded-md bg-black/80 px-2 py-1 font-mono text-xs text-white opacity-0 backdrop-blur transition-opacity group-hover/seek:opacity-100"
-      />
+        className={`pointer-events-none absolute bottom-6 flex -translate-x-1/2 flex-col items-center gap-1 opacity-0 transition-opacity group-hover/seek:opacity-100 ${dragging ? 'opacity-100' : ''}`}
+      >
+        <canvas
+          ref={canvasRef}
+          width={PREVIEW_W * 2}
+          height={previewH * 2}
+          style={{ width: PREVIEW_W, height: previewH }}
+          className="hidden rounded-lg bg-black shadow-xl ring-2 ring-white/80 data-[ready]:block"
+        />
+        <span ref={labelRef} className="rounded-md bg-black/80 px-2 py-1 font-mono text-xs text-white backdrop-blur" />
+      </div>
     </div>
   );
 }

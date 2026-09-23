@@ -20,6 +20,7 @@ import { AudioDecodePipe } from './decode/AudioDecodePipe';
 import { AudioMasterClock, WallClock, type MediaClock } from './sync/MediaClock';
 import { WebGpuRenderer } from './render/WebGpuRenderer';
 import { CadenceMonitor, SmoothClock, VsyncEstimator } from './sync/FramePacer';
+import { PreviewService } from './preview/PreviewService';
 
 /** Network/demux read-ahead window (seconds). Encoded media is cheap to hold. */
 const READ_AHEAD_HIGH = 30;
@@ -39,6 +40,7 @@ type Post = (msg: FromWorker, transfer?: Transferable[]) => void;
 
 interface LoadedMedia {
   demuxer: Demuxer;
+  preview: PreviewService | null;
   video: VideoDecodePipe | null;
   audio: AudioDecodePipe | null;
   clock: MediaClock;
@@ -156,8 +158,11 @@ export class MediaEngine implements DemuxSink {
           ? { codec: tracks.audio.codec, sampleRate: tracks.audio.sampleRate, channels: tracks.audio.numberOfChannels }
           : null,
       };
+      const previewConfig = video?.activeConfig;
+      const aspect = tracks.video ? (tracks.video.displayAspectWidth ?? tracks.video.codedWidth!) / (tracks.video.displayAspectHeight ?? tracks.video.codedHeight!) : 16 / 9;
       this.media = {
         demuxer,
+        preview: previewConfig ? new PreviewService(demuxer, previewConfig, aspect) : null,
         video,
         audio,
         clock: audio ? new AudioMasterClock(audio) : new WallClock(),
@@ -167,6 +172,9 @@ export class MediaEngine implements DemuxSink {
       this.applyLatency();
       demuxer.start();
       this.post({ type: 'media-info', info });
+      // Local files: pre-decode a sparse set of previews so hovering the seek
+      // bar is instant everywhere. (Remote media only fetches on hover.)
+      if (input.kind === 'file') this.scheduleWarmup(gen);
       this.setState(this.wantPlay ? 'buffering' : 'ready');
     } catch (e) {
       demuxer?.close();
@@ -201,6 +209,10 @@ export class MediaEngine implements DemuxSink {
     this.resolveDemand(true);
     m.demuxer.seek(target);
     this.preroll = true;
+    // Instant feedback: if the preview decoder already holds the keyframe this
+    // seek starts from, show it now; the exact frame replaces it when decoded.
+    const quick = m.preview?.frameForSeek(target);
+    if (quick) this.present(quick, true);
     this.writeTelemetry(target);
     this.setState(this.wantPlay ? 'buffering' : 'paused');
   }
@@ -248,6 +260,25 @@ export class MediaEngine implements DemuxSink {
     // holding the key walks frame by frame instead of repeating one step.
     const now = this.preroll ? this.lastSeekTarget - frameDuration / 4 : this.current ? this.current.timestamp / 1e6 : m.clock.now();
     this.seek(Math.max(0, now + direction * frameDuration + frameDuration / 4));
+  }
+
+  preview(id: number, time: number): void {
+    const service = this.media?.preview;
+    if (!service) return this.post({ type: 'preview', id, time, bitmap: null });
+    void service.request(time).then((r) => {
+      if (r) this.post({ type: 'preview', id, time: r.time, bitmap: r.bitmap }, [r.bitmap]);
+      else this.post({ type: 'preview', id, time, bitmap: null });
+    });
+  }
+
+  private scheduleWarmup(gen: number, attempt = 0): void {
+    setTimeout(() => {
+      const m = this.media;
+      if (gen !== this.loadGeneration || !m?.preview) return;
+      // MKV Cues may still be loading in the background: retry a few times.
+      if (m.demuxer.keyframeTimes().length) m.preview.warmup(24);
+      else if (attempt < 5) this.scheduleWarmup(gen, attempt + 1);
+    }, 800 * (attempt + 1));
   }
 
   snapshot(): void {
@@ -593,6 +624,7 @@ export class MediaEngine implements DemuxSink {
     if (m) {
       m.clock.pause();
       m.demuxer.close();
+      m.preview?.dispose();
       m.video?.close();
       m.audio?.close();
     }

@@ -132,3 +132,18 @@ describe('MkvDemuxer pre-start buffering', () => {
     expect(out.video).toHaveLength(360);
   });
 });
+
+describe('MkvDemuxer keyframe index', () => {
+  it('exposes Cues as keyframes and reads one from its cluster', async () => {
+    const { demuxer, video } = await demuxAll('public/samples/sample-vp9-opus.mkv');
+    await new Promise((r) => setTimeout(r, 20)); // background Cues fetch
+    const times = demuxer.keyframeTimes();
+    expect(times.length).toBeGreaterThan(3);
+    const i = times.findIndex((t) => t > 5);
+    const chunk = (await demuxer.readKeyframe(i)) as unknown as { type: string; timestamp: number; data: Uint8Array };
+    const same = video.find((c) => Math.abs(c.timestamp - chunk.timestamp) < 1)!;
+    expect(chunk.type).toBe('key');
+    expect(same.type).toBe('key');
+    expect(chunk.data).toEqual(same.data);
+  });
+});

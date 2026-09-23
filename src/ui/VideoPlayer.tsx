@@ -254,6 +254,7 @@ export function VideoPlayer({ onReady }: { onReady?: (player: VideoPlayerHandle)
           title={snap.sourceName}
           loop={snap.loop}
           duration={snap.info?.duration ?? 0}
+          aspect={aspect}
           showPicture={showPicture}
           onTogglePicture={() => setShowPicture((v) => !v)}
         />
@@ -275,6 +276,7 @@ interface ControlsProps {
   title: string | null;
   loop: PlayerSnapshot['loop'];
   duration: number;
+  aspect: number;
   showPicture: boolean;
   onToggleStats(): void;
   onToggleFullscreen(): void;
@@ -287,7 +289,7 @@ function Controls(p: ControlsProps) {
     <div
       className={`absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/85 via-black/40 to-transparent px-4 pt-16 pb-3 transition-opacity duration-300 ${p.visible ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
     >
-      <SeekBar controller={p.player} loop={p.loop} duration={p.duration} />
+      <SeekBar controller={p.player} loop={p.loop} duration={p.duration} aspect={p.aspect} />
       <div className="mt-1.5 flex items-center gap-1 text-white">
         <IconButton label={p.playing ? 'Pause (k)' : p.ended ? 'Replay' : 'Play (k)'} onClick={() => p.player.togglePlay()}>
           {p.playing ? <PauseIcon className="size-6" /> : p.ended ? <ReplayIcon className="size-6" /> : <PlayIcon className="size-6" />}

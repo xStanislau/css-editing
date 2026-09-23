@@ -48,3 +48,19 @@ test('picture panel and zoom controls', async ({ page }) => {
   await page.keyboard.press('z');
   await expect(page.getByRole('button', { name: /× · reset/ })).toHaveCount(0);
 });
+
+test('seek bar hover shows a real decoded frame', async ({ page }) => {
+  const bar = page.getByRole('slider', { name: 'Seek' });
+  const box = (await bar.boundingBox())!;
+  await page.mouse.move(box.x + box.width * 0.6, box.y + box.height / 2);
+  const preview = page.locator('canvas[data-ready]');
+  await expect(preview).toBeVisible({ timeout: 5_000 });
+  // The preview canvas must contain actual picture content, not a blank box.
+  const lit = await preview.evaluate((c: HTMLCanvasElement) => {
+    const d = c.getContext('2d')!.getImageData(0, 0, c.width, c.height).data;
+    let sum = 0;
+    for (let i = 0; i < d.length; i += 4) sum += d[i] + d[i + 1] + d[i + 2];
+    return sum / (d.length / 4) / 3;
+  });
+  expect(lit).toBeGreaterThan(40);
+});

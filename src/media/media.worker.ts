@@ -51,6 +51,9 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
       case 'snapshot':
         engine.snapshot();
         break;
+      case 'preview':
+        engine.preview(msg.id, msg.time);
+        break;
       case 'audio-latency':
         engine.setOutputLatency(msg.seconds);
         break;

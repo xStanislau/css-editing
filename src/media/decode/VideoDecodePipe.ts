@@ -61,6 +61,11 @@ export class VideoDecodePipe {
     return false;
   }
 
+  /** The configuration actually in use (after hardware/software negotiation). */
+  get activeConfig(): VideoDecoderConfig | null {
+    return this.config;
+  }
+
   get decodeQueueSize(): number {
     return this.decoder.state === 'configured' ? this.decoder.decodeQueueSize : 0;
   }

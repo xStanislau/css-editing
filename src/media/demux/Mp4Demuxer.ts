@@ -31,6 +31,8 @@ export class Mp4Demuxer implements Demuxer {
   private abort: AbortController | null = null;
   private videoTrack: Track | null = null;
   private audioTrack: Track | null = null;
+  /** Video sync samples: presentation time (s), byte range and duration. */
+  private keyframes: { time: number; offset: number; size: number; duration: number }[] = [];
   /** Per-track presentation offset in seconds, from the edit list (elst). */
   private readonly trackOffset = new Map<number, number>();
   private opened: { resolve: (t: DemuxedTracks) => void; reject: (e: Error) => void } | null = null;
@@ -87,6 +89,17 @@ export class Mp4Demuxer implements Demuxer {
       this.restart(offset);
     }
     return actual;
+  }
+
+  keyframeTimes(): number[] {
+    return this.keyframes.map((k) => k.time);
+  }
+
+  async readKeyframe(index: number): Promise<EncodedVideoChunk | null> {
+    const k = this.keyframes[index];
+    if (!k) return null;
+    const data = await readRange(this.source, k.offset, k.size);
+    return data && new EncodedVideoChunk({ type: 'key', timestamp: k.time * 1e6, duration: k.duration * 1e6, data });
   }
 
   close(): void {
@@ -164,6 +177,14 @@ export class Mp4Demuxer implements Demuxer {
 
     for (const t of [this.videoTrack, this.audioTrack]) {
       if (t) this.trackOffset.set(t.id, editListOffset(t, info.timescale));
+    }
+    if (this.videoTrack) {
+      const shift = this.trackOffset.get(this.videoTrack.id) ?? 0;
+      this.keyframes = this.file
+        .getTrackSamplesInfo(this.videoTrack.id)
+        .filter((s) => s.is_sync)
+        .map((s) => ({ time: s.cts / s.timescale + shift, offset: s.offset, size: s.size, duration: s.duration / s.timescale }))
+        .sort((a, b) => a.time - b.time);
     }
     for (const t of [this.videoTrack, this.audioTrack]) {
       if (t) this.file.setExtractionOptions(t.id, null, { nbSamples: EXTRACT_BATCH });
@@ -291,4 +312,25 @@ export function editListOffset(track: Pick<Track, 'edits' | 'timescale'>, movieT
     return delay - e.media_time / track.timescale;
   }
   return delay;
+}
+
+/** Read exactly `size` bytes at `offset` with an independent request. */
+export async function readRange(source: ByteSource, offset: number, size: number): Promise<Uint8Array | null> {
+  const ac = new AbortController();
+  const out = new Uint8Array(size);
+  let filled = 0;
+  try {
+    const reader = await source.open(offset, ac.signal);
+    while (filled < size) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const n = Math.min(value.length, size - filled);
+      out.set(value.subarray(0, n), filled);
+      filled += n;
+    }
+    reader.cancel().catch(() => {});
+  } finally {
+    ac.abort();
+  }
+  return filled === size ? out : null;
 }
