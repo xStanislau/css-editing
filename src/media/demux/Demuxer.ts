@@ -6,12 +6,20 @@
  * interface without the decoders, clock or renderer noticing.
  */
 
+import type { SubtitleChunk, SubtitleTrack } from '../../shared/protocol';
+
+export type SubtitleTrackInfo = SubtitleTrack;
+export type { SubtitleChunk };
+
 export interface DemuxedTracks {
   duration: number;
   container: string;
   progressive: boolean;
   video: (VideoDecoderConfig & { fps: number }) | null;
   audio: AudioDecoderConfig | null;
+  subtitles: SubtitleTrackInfo[];
+  /** Embedded fonts (MKV attachments) known at open time. */
+  fonts: Uint8Array[];
 }
 
 export interface DemuxSink {
@@ -20,6 +28,10 @@ export interface DemuxSink {
   /** All samples up to end of file have been delivered. */
   onEndOfStream(): void;
   onError(error: Error): void;
+  /** Text subtitle events (all subtitle tracks), in demux order. */
+  onSubtitle?(chunk: SubtitleChunk): void;
+  /** Embedded fonts discovered after open (attachments at the end of the file). */
+  onFonts?(fonts: Uint8Array[]): void;
   /**
    * Backpressure: the demuxer awaits this before pulling more bytes off the
    * network. Resolves immediately while buffers are below target.

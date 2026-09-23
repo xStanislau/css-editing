@@ -10,10 +10,12 @@ import {
   type PictureSettings,
   type PlaybackState,
   type RenderMode,
+  type SubtitleTrack,
   type ToWorker,
   type ViewSettings,
 } from '../shared/protocol';
 import { T, Telemetry } from '../shared/telemetry';
+import { SubtitleRenderer, type ActiveSubtitle } from './SubtitleRenderer';
 
 export interface PlayerSnapshot {
   state: PlaybackState;
@@ -29,6 +31,8 @@ export interface PlayerSnapshot {
   view: ViewSettings;
   /** A-B loop; `b` is null while only A is set. */
   loop: { a: number; b: number | null } | null;
+  /** Selectable subtitles: embedded tracks plus an optional external file. */
+  subtitles: { tracks: SubtitleTrack[]; external: string | null; active: ActiveSubtitle };
 }
 
 const MAX_ZOOM = 8;
@@ -50,6 +54,9 @@ export class PlayerController {
   private readonly telemetry = Telemetry.create();
   private readonly telemetrySnapshot = new Float64Array(T.SLOTS);
   private readonly resizeObserver: ResizeObserver;
+  private readonly host: HTMLElement;
+  private readonly subtitles: SubtitleRenderer;
+  private stopSubtitleLoop: (() => void) | null = null;
 
   private audioCtx: AudioContext | null = null;
   private gain: GainNode | null = null;
@@ -69,6 +76,7 @@ export class PlayerController {
     picture: DEFAULT_PICTURE,
     view: DEFAULT_VIEW,
     loop: null,
+    subtitles: { tracks: [], external: null, active: null },
   };
   private readonly listeners = new Set<() => void>();
   private readonly frameListeners = new Set<FrameListener>();
@@ -92,6 +100,9 @@ export class PlayerController {
     this.canvas.className = 'absolute inset-0 h-full w-full';
     host.prepend(this.canvas);
 
+    this.host = host;
+    this.subtitles = new SubtitleRenderer(host);
+
     const offscreen = this.canvas.transferControlToOffscreen();
     this.worker = new MediaWorker({ name: 'media-pipeline' });
     this.worker.onmessage = (e: MessageEvent<FromWorker>) => this.onWorkerMessage(e.data);
@@ -106,6 +117,7 @@ export class PlayerController {
       const dp = entry.devicePixelContentBoxSize?.[0];
       const [pw, ph] = dp ? [dp.inlineSize, dp.blockSize] : this.devicePixelSize(entry.contentRect.width, entry.contentRect.height);
       this.send({ type: 'resize', width: pw, height: ph });
+      this.layoutSubtitles();
     });
     try {
       this.resizeObserver.observe(this.canvas, { box: 'device-pixel-content-box' });
@@ -148,7 +160,7 @@ export class PlayerController {
 
   load(source: MediaSourceInput): void {
     const sourceName = source.kind === 'file' ? source.file.name : source.url.split('/').pop() || source.url;
-    this.update({ info: null, error: null, sourceName, loop: null });
+    this.update({ info: null, error: null, sourceName, loop: null, subtitles: { tracks: [], external: null, active: null } });
     this.send({ type: 'load', source });
   }
 
@@ -274,6 +286,59 @@ export class PlayerController {
     return () => this.previewListeners.delete(fn);
   }
 
+  // ------------------------------------------------------------ subtitles
+
+  selectSubtitle(track: ActiveSubtitle): void {
+    void this.subtitles.select(track);
+    this.syncSubtitleState();
+  }
+
+  /** Off → each track → external file → off. */
+  cycleSubtitles(): void {
+    const { tracks, external, active } = this.snapshot.subtitles;
+    const order: ActiveSubtitle[] = [null, ...tracks.map((t) => t.id), ...(external ? ['external' as const] : [])];
+    const next = order[(order.indexOf(active) + 1) % order.length];
+    this.selectSubtitle(next);
+    const label = next === null ? 'Subtitles off' : next === 'external' ? external! : subtitleLabel(tracks.find((t) => t.id === next)!);
+    this.update({ notice: { message: label, id: ++this.errorSeq } });
+  }
+
+  async loadSubtitleFile(file: File): Promise<void> {
+    this.subtitles.loadExternal(file.name, await file.text());
+    this.syncSubtitleState();
+    this.update({ notice: { message: `Subtitles: ${file.name}`, id: ++this.errorSeq } });
+  }
+
+  /** Tell subtitles how much of the bottom the controls currently cover. */
+  setControlsInset(px: number): void {
+    this.subtitles.setBottomInset(px);
+  }
+
+  private syncSubtitleState(): void {
+    const active = this.subtitles.activeTrack;
+    this.update({
+      subtitles: { tracks: this.snapshot.info?.subtitles ?? [], external: this.subtitles.externalName, active },
+    });
+    // Drive libass from our clock only while subtitles are shown.
+    if (active !== null && !this.stopSubtitleLoop) {
+      this.stopSubtitleLoop = this.onFrame((t) => this.subtitles.render(t[T.CurrentTime]));
+    } else if (active === null && this.stopSubtitleLoop) {
+      this.stopSubtitleLoop();
+      this.stopSubtitleLoop = null;
+    }
+  }
+
+  /** Subtitles sit over the letterboxed video rectangle, not the black bars. */
+  private layoutSubtitles(): void {
+    const v = this.snapshot.info?.video;
+    const aspect = v ? v.width / v.height : 16 / 9;
+    const w = this.host.clientWidth;
+    const h = this.host.clientHeight;
+    const width = Math.min(w, h * aspect);
+    const height = width / aspect;
+    this.subtitles.layout({ left: (w - width) / 2, top: (h - height) / 2, width, height });
+  }
+
   // ------------------------------------------------------ precision tools
 
   stepFrame(direction: 1 | -1): void {
@@ -316,6 +381,8 @@ export class PlayerController {
     if (this.rafId) cancelAnimationFrame(this.rafId);
     if (this.latencyTimer) clearInterval(this.latencyTimer);
     void this.audioCtx?.close();
+    this.stopSubtitleLoop?.();
+    this.subtitles.destroy();
     this.canvas.remove();
     this.listeners.clear();
     this.frameListeners.clear();
@@ -338,8 +405,19 @@ export class PlayerController {
       case 'gpu-ready':
         this.update({ gpu: msg.adapter });
         break;
-      case 'media-info':
+      case 'media-info': {
         this.update({ info: msg.info });
+        const v = msg.info.video;
+        this.subtitles.setMedia(msg.info.subtitles, v?.width ?? 0, v?.height ?? 0);
+        this.layoutSubtitles();
+        this.syncSubtitleState();
+        break;
+      }
+      case 'subtitle-chunks':
+        this.subtitles.addChunks(msg.chunks);
+        break;
+      case 'fonts':
+        this.subtitles.addFonts(msg.fonts);
         break;
       case 'audio-ring':
         void this.attachAudio(msg.sab, msg.sampleRate, msg.channels);
@@ -449,4 +527,9 @@ export class PlayerController {
     this.snapshot = { ...this.snapshot, ...patch };
     for (const fn of this.listeners) fn();
   }
+}
+
+export function subtitleLabel(t: SubtitleTrack): string {
+  const lang = t.language && t.language !== 'und' ? t.language.toUpperCase() : '';
+  return t.name ? (lang ? `${t.name} · ${lang}` : t.name) : lang || `Track ${t.id}`;
 }

@@ -45,7 +45,7 @@ export function SourceBar({ onLoad }: { onLoad: (source: MediaSourceInput) => vo
       <input
         ref={fileRef}
         type="file"
-        accept="video/mp4,video/quicktime,video/x-matroska,video/webm,.mp4,.m4v,.mov,.mkv,.webm"
+        accept="video/mp4,video/quicktime,video/x-matroska,video/webm,.mp4,.m4v,.mov,.mkv,.webm,.ass,.ssa,.srt,.vtt"
         hidden
         onChange={(e) => {
           const file = e.target.files?.[0];

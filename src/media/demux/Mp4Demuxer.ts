@@ -173,6 +173,8 @@ export class Mp4Demuxer implements Demuxer {
       progressive: info.isProgressive,
       video: this.videoTrack ? this.videoConfig(this.videoTrack) : null,
       audio: this.audioTrack ? this.audioConfig(this.audioTrack) : null,
+      subtitles: [],
+      fonts: [],
     };
 
     for (const t of [this.videoTrack, this.audioTrack]) {

@@ -62,3 +62,56 @@ test('plays Matroska (MKV) and seeks through its Cues', async ({ page }) => {
   await expect.poll(() => currentSeconds(page), { timeout: 5_000 }).toBeGreaterThanOrEqual(8);
   await expect(page.getByRole('button', { name: 'Replay' }).first()).toBeVisible({ timeout: 20_000 });
 });
+
+test('renders embedded ASS subtitles with libass and toggles them', async ({ page }) => {
+  await page.goto('/');
+  await page.getByPlaceholder(/https:/).fill('http://localhost:4173/samples/sample-subs.mkv');
+  await page.getByRole('button', { name: 'Load URL' }).click();
+  await expect(page.getByRole('button', { name: 'Play', exact: true }).first()).toBeVisible({ timeout: 15_000 });
+
+  // Subtitle track is listed with its name and language.
+  await page.getByRole('button', { name: 'Subtitles (c)' }).click();
+  await expect(page.getByRole('menuitemradio', { name: /Русские \(ASS\) · RUS/ })).toHaveAttribute('aria-checked', 'true');
+  await page.getByRole('button', { name: 'Subtitles (c)' }).click(); // close the menu
+  await expect(page.getByRole('menu', { name: 'Subtitles' })).toBeHidden();
+
+  // Seek (paused) into a range where two events are on screen, let libass paint.
+  await page.keyboard.press('2'); // 2.4s
+  await page.waitForTimeout(2500);
+  // Compare only the top band where the "Sign" style renders: the video is
+  // paused, so any difference there is the subtitle itself (not UI state).
+  const box = (await page.locator('.aspect-video').first().boundingBox())!;
+  const band = { x: box.x + box.width * 0.2, y: box.y + 4, width: box.width * 0.6, height: box.height * 0.12 };
+  const withSubs = await page.screenshot({ clip: band });
+
+  // Toggling shows a notice toast in the same area: wait for it to go away.
+  await page.keyboard.press('c'); // -> off
+  await expect(page.getByText('Subtitles off')).toBeHidden({ timeout: 6_000 });
+  const without = await page.screenshot({ clip: band });
+  const control = await page.screenshot({ clip: band });
+  expect(Buffer.compare(without, control)).toBe(0); // the band is stable without subtitles
+  expect(Buffer.compare(withSubs, without)).not.toBe(0);
+
+  await page.keyboard.press('c'); // -> track again
+  await expect(page.getByText(/Русские \(ASS\)/)).toBeHidden({ timeout: 6_000 });
+  await page.waitForTimeout(500);
+  const again = await page.screenshot({ clip: band });
+  expect(Buffer.compare(again, without)).not.toBe(0);
+});
+
+test('loads an external SRT file dropped on the player', async ({ page }) => {
+  await page.goto('/');
+  await page.getByPlaceholder(/https:/).fill('http://localhost:4173/samples/sample-vp9-opus.mkv');
+  await page.getByRole('button', { name: 'Load URL' }).click();
+  await expect(page.getByRole('button', { name: 'Play', exact: true }).first()).toBeVisible({ timeout: 15_000 });
+  const srt = '1\n00:00:00,000 --> 00:00:10,000\nExternal <i>SRT</i> works\n';
+  const dt = await page.evaluateHandle((text) => {
+    const d = new DataTransfer();
+    d.items.add(new File([text], 'episode.srt', { type: 'text/plain' }));
+    return d;
+  }, srt);
+  await page.locator('.aspect-video').first().dispatchEvent('drop', { dataTransfer: dt });
+  await expect(page.getByText('Subtitles: episode.srt')).toBeVisible();
+  await page.getByRole('button', { name: 'Subtitles (c)' }).click();
+  await expect(page.getByRole('menuitemradio', { name: 'episode.srt' })).toHaveAttribute('aria-checked', 'true');
+});

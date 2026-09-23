@@ -8,6 +8,7 @@ import {
   type PictureSettings,
   type PlaybackState,
   type RenderMode,
+  type SubtitleChunk,
   type ViewSettings,
 } from '../shared/protocol';
 import { T, Telemetry } from '../shared/telemetry';
@@ -85,6 +86,8 @@ export class MediaEngine implements DemuxSink {
   private view: ViewSettings = DEFAULT_VIEW;
   private loop: LoopRange | null = null;
   private lastSeekTarget = 0;
+  /** Subtitle events gathered since the last tick (posted in one batch). */
+  private pendingSubtitles: SubtitleChunk[] = [];
   // Frame pacing (see FramePacer.ts).
   private readonly vsync = new VsyncEstimator();
   private readonly smoothClock = new SmoothClock();
@@ -157,6 +160,7 @@ export class MediaEngine implements DemuxSink {
         audio: tracks.audio && audio
           ? { codec: tracks.audio.codec, sampleRate: tracks.audio.sampleRate, channels: tracks.audio.numberOfChannels }
           : null,
+        subtitles: tracks.subtitles,
       };
       const previewConfig = video?.activeConfig;
       const aspect = tracks.video ? (tracks.video.displayAspectWidth ?? tracks.video.codedWidth!) / (tracks.video.displayAspectHeight ?? tracks.video.codedHeight!) : 16 / 9;
@@ -170,8 +174,9 @@ export class MediaEngine implements DemuxSink {
         demuxEnded: false,
       };
       this.applyLatency();
-      demuxer.start();
       this.post({ type: 'media-info', info });
+      if (tracks.fonts.length) this.onFonts(tracks.fonts);
+      demuxer.start();
       // Local files: pre-decode a sparse set of previews so hovering the seek
       // bar is instant everywhere. (Remote media only fetches on hover.)
       if (input.kind === 'file') this.scheduleWarmup(gen);
@@ -332,6 +337,20 @@ export class MediaEngine implements DemuxSink {
     this.fatal(error.message);
   }
 
+  onSubtitle(chunk: SubtitleChunk): void {
+    this.pendingSubtitles.push(chunk);
+  }
+
+  onFonts(fonts: Uint8Array[]): void {
+    this.post({ type: 'fonts', fonts }, fonts.map((f) => f.buffer));
+  }
+
+  private flushSubtitles(): void {
+    if (!this.pendingSubtitles.length) return;
+    this.post({ type: 'subtitle-chunks', chunks: this.pendingSubtitles });
+    this.pendingSubtitles = [];
+  }
+
   demand(): Promise<void> {
     if (this.readAhead() < READ_AHEAD_HIGH) return Promise.resolve();
     return new Promise((resolve) => this.demandWaiters.push(resolve));
@@ -376,6 +395,7 @@ export class MediaEngine implements DemuxSink {
     this.selectFrame(m, t, visible, rafTime);
     if (visible) this.checkAutoDegrade();
     this.resolveDemand(false);
+    this.flushSubtitles();
     this.writeTelemetry(t);
   }
 
@@ -620,6 +640,7 @@ export class MediaEngine implements DemuxSink {
   private unload(): void {
     const m = this.media;
     this.media = null;
+    this.pendingSubtitles = [];
     this.resolveDemand(true);
     if (m) {
       m.clock.pause();

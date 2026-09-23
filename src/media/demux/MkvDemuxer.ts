@@ -1,10 +1,16 @@
 import type { ByteSource } from '../source/ByteSource';
-import type { DemuxedTracks, Demuxer, DemuxSink } from './Demuxer';
+import type { DemuxedTracks, Demuxer, DemuxSink, SubtitleTrackInfo } from './Demuxer';
+import { TEXT_SUBTITLE_HEADER, textChunk } from '../../shared/subtitles';
 import { ID, TOP_LEVEL, UNKNOWN_SIZE, children, readFloat, readHeader, readString, readUint, readVint } from './ebml';
 import { aacCodecString, av1CodecString, avcCodecString, hevcCodecString, vp9CodecString } from './codecStrings';
 
-/** Elements bigger than this are skipped instead of buffered (attachments, huge tags). */
+/** Elements bigger than this are skipped instead of buffered (huge tags etc). */
 const MAX_BUFFERED_ELEMENT = 16 * 1024 * 1024;
+/** Attachments (fonts for ASS typesetting) can be large; cap what we buffer. */
+const MAX_ATTACHMENTS = 64 * 1024 * 1024;
+const ASS_CODECS = new Set(['S_TEXT/ASS', 'S_TEXT/SSA', 'S_ASS', 'S_SSA']);
+const TEXT_CODECS = new Set(['S_TEXT/UTF8', 'S_TEXT/WEBVTT', 'D_WEBVTT/SUBTITLES']);
+const FONT_FILE = /\.(ttf|otf|ttc|woff2?)$/i;
 
 interface MkvTrack {
   number: number;
@@ -26,6 +32,8 @@ interface MkvTrack {
   /** Header-stripping compression prefix (ContentCompAlgo 3). */
   stripPrefix?: Uint8Array;
   unsupportedEncoding?: boolean;
+  language?: string;
+  name?: string;
 }
 
 interface CuePoint {
@@ -79,6 +87,10 @@ export class MkvDemuxer implements Demuxer {
   private cuesPosition = -1;
   private cues: CuePoint[] = [];
   private cuesLoading = false;
+  private attachmentsPosition = -1;
+  private attachmentsParsed = false;
+  private fonts: Uint8Array[] = [];
+  private subtitleTracks: SubtitleTrackInfo[] = [];
   private clusterTime = 0;
   private firstVideoKeyframe: Uint8Array | undefined;
   private preStart: (() => void)[] = [];
@@ -358,7 +370,8 @@ export class MkvDemuxer implements Demuxer {
       }
 
       const end = dataStart + h.size;
-      if (!this.wantsElement(h.id, parent?.id) || h.size > MAX_BUFFERED_ELEMENT) {
+      const limit = h.id === ID.Attachments ? MAX_ATTACHMENTS : MAX_BUFFERED_ELEMENT;
+      if (!this.wantsElement(h.id, parent?.id) || h.size > limit) {
         this.pos = end; // skip (possibly beyond the buffer; append() discards the rest)
         continue;
       }
@@ -372,7 +385,7 @@ export class MkvDemuxer implements Demuxer {
 
   private wantsElement(id: number, parent: number | undefined): boolean {
     if (id === ID.EBML) return true;
-    if (parent === ID.Segment) return id === ID.SeekHead || id === ID.Info || id === ID.Tracks || id === ID.Cues;
+    if (parent === ID.Segment) return id === ID.SeekHead || id === ID.Info || id === ID.Tracks || id === ID.Cues || id === ID.Attachments;
     if (parent === ID.Cluster) return id === ID.Timecode || id === ID.SimpleBlock || id === ID.BlockGroup;
     return false;
   }
@@ -399,6 +412,9 @@ export class MkvDemuxer implements Demuxer {
         break;
       case ID.Cues:
         this.cues = this.parseCues(data);
+        break;
+      case ID.Attachments:
+        this.parseAttachments(data);
         break;
       case ID.Timecode:
         this.clusterTime = readUint(data, 0, data.length);
@@ -431,6 +447,7 @@ export class MkvDemuxer implements Demuxer {
         else if (c.id === ID.SeekPosition) position = readUint(data, c.data, c.size);
       }
       if (target === ID.Cues && position >= 0) this.cuesPosition = this.segmentStart + position;
+      if (target === ID.Attachments && position >= 0) this.attachmentsPosition = this.segmentStart + position;
     }
   }
 
@@ -458,6 +475,8 @@ export class MkvDemuxer implements Demuxer {
           case ID.DefaultDuration: t.defaultDuration = u(); break;
           case ID.FlagDefault: t.isDefault = u() === 1; break;
           case ID.FlagEnabled: t.enabled = u() === 1; break;
+          case ID.Language: t.language = readString(data, c.data, c.size); break;
+          case ID.Name: t.name = readString(data, c.data, c.size); break;
           case ID.Video:
             for (const v of children(data, c.data, c.data + c.size)) {
               const vu = readUint(data, v.data, v.size);
@@ -488,6 +507,17 @@ export class MkvDemuxer implements Demuxer {
     };
     this.video = pick(1);
     this.audio = pick(2);
+    const decoder = new TextDecoder();
+    this.subtitleTracks = [...this.tracks.values()]
+      .filter((t) => t.type === 17 && (ASS_CODECS.has(t.codecId) || TEXT_CODECS.has(t.codecId)) && !t.unsupportedEncoding)
+      .map((t) => ({
+        id: t.number,
+        format: ASS_CODECS.has(t.codecId) ? 'ass' : 'text',
+        language: t.language,
+        name: t.name,
+        isDefault: t.isDefault,
+        header: ASS_CODECS.has(t.codecId) && t.codecPrivate ? decoder.decode(t.codecPrivate) : TEXT_SUBTITLE_HEADER,
+      }));
     this.tracksParsed = true;
     if (!this.video && !this.audio) throw new Error('No audio or video track found');
   }
@@ -535,6 +565,7 @@ export class MkvDemuxer implements Demuxer {
   private handleBlock(block: Uint8Array, simple: boolean, groupKey: boolean, blockDuration: number | undefined): void {
     const { value: trackNumber, length } = readVint(block, 0);
     const track = this.tracks.get(trackNumber);
+    if (track?.type === 17) return this.handleSubtitleBlock(track, block, length, blockDuration);
     if (!track || (track !== this.video && track !== this.audio)) return;
 
     let p = length;
@@ -586,6 +617,45 @@ export class MkvDemuxer implements Demuxer {
     if (this.opened && (!this.video || this.firstVideoKeyframe)) this.resolveOpen(false);
   }
 
+  private handleSubtitleBlock(track: MkvTrack, block: Uint8Array, headerLength: number, blockDuration: number | undefined): void {
+    const info = this.subtitleTracks.find((s) => s.id === track.number);
+    if (!info || !this.sink.onSubtitle) return;
+    const relative = ((block[headerLength] << 24) >> 16) | block[headerLength + 1];
+    const text = new TextDecoder().decode(block.subarray(headerLength + 3));
+    const scale = this.timecodeScale;
+    const start = ((this.clusterTime + relative) * scale) / 1e9;
+    const duration = blockDuration !== undefined ? (blockDuration * scale) / 1e9 : (track.defaultDuration ?? 5e9) / 1e9;
+    // ReadOrder derived from time (not a counter) so events re-read after a
+    // seek are recognised as duplicates by libass.
+    const data = info.format === 'ass' ? text : textChunk(Math.round(start * 1000), text);
+    const emit = () => this.sink.onSubtitle?.({ track: track.number, data, start, duration });
+    if (this.started) emit();
+    else this.preStart.push(emit);
+  }
+
+  /** Keep font attachments (for ASS typesetting); ignore covers, chapters images etc. */
+  private parseAttachments(data: Uint8Array): void {
+    if (this.attachmentsParsed) return;
+    this.attachmentsParsed = true;
+    const fonts: Uint8Array[] = [];
+    for (const file of children(data)) {
+      if (file.id !== ID.AttachedFile) continue;
+      let name = '';
+      let mime = '';
+      let payload: Uint8Array | undefined;
+      for (const c of children(data, file.data, file.data + file.size)) {
+        if (c.id === ID.FileName) name = readString(data, c.data, c.size);
+        else if (c.id === ID.FileMimeType) mime = readString(data, c.data, c.size);
+        else if (c.id === ID.FileData) payload = data.subarray(c.data, c.data + c.size);
+      }
+      if (payload && (/font|truetype|opentype|sfnt/i.test(mime) || FONT_FILE.test(name))) fonts.push(payload.slice());
+    }
+    if (!fonts.length) return;
+    this.fonts = fonts;
+    // Fonts found after open (attachments at the end) are pushed to the sink.
+    if (!this.opened) this.sink.onFonts?.(fonts);
+  }
+
   // ================================================================ helpers
 
   private resolveOpen(atEof: boolean): void {
@@ -602,10 +672,15 @@ export class MkvDemuxer implements Demuxer {
       progressive: true,
       video: v ? this.videoConfig(v) : null,
       audio: a ? this.audioConfig(a) : null,
+      subtitles: this.subtitleTracks,
+      fonts: this.fonts,
     };
     this.opened.resolve(tracks);
     this.opened = null;
     void this.loadCues();
+    if (!this.attachmentsParsed && this.attachmentsPosition >= 0) {
+      void this.fetchElement(this.attachmentsPosition, ID.Attachments, MAX_ATTACHMENTS).then((d) => d && this.parseAttachments(d));
+    }
   }
 
   private videoConfig(t: MkvTrack): VideoDecoderConfig & { fps: number } {
@@ -670,29 +745,44 @@ export class MkvDemuxer implements Demuxer {
     if (this.cues.length || this.cuesPosition < 0 || this.cuesLoading) return;
     this.cuesLoading = true;
     try {
-      const reader = await this.source.open(this.cuesPosition, new AbortController().signal);
-      let buf = new Uint8Array(0);
+      const data = await this.fetchElement(this.cuesPosition, ID.Cues, MAX_BUFFERED_ELEMENT);
+      if (data) this.cues = this.parseCues(data);
+    } finally {
+      this.cuesLoading = false;
+    }
+  }
+
+  /** Read one whole top-level element at `position` with its own request; returns its payload. */
+  private async fetchElement(position: number, id: number, maxBytes: number): Promise<Uint8Array | null> {
+    const ac = new AbortController();
+    try {
+      const reader = await this.source.open(position, ac.signal);
+      const parts: Uint8Array[] = [];
+      let total = 0;
+      let need = -1;
       for (;;) {
         const { done, value } = await reader.read();
         if (value) {
-          const next = new Uint8Array(buf.length + value.length);
-          next.set(buf);
-          next.set(value, buf.length);
-          buf = next;
+          parts.push(value);
+          total += value.length;
         }
-        const h = readHeader(buf, 0);
-        if (h && h.id !== ID.Cues) break;
-        if (h && buf.length >= h.headerLength + h.size) {
-          this.cues = this.parseCues(buf.subarray(h.headerLength, h.headerLength + h.size));
-          break;
+        if (need < 0 && total >= 12) {
+          const head = concat(parts, Math.min(total, 16));
+          const h = readHeader(head, 0);
+          if (!h || h.id !== id || h.size === UNKNOWN_SIZE || h.size > maxBytes) return null;
+          need = h.headerLength + h.size;
         }
-        if (done || buf.length > MAX_BUFFERED_ELEMENT) break;
+        if (need >= 0 && total >= need) {
+          reader.cancel().catch(() => {});
+          const all = concat(parts, need);
+          return all.subarray(readHeader(all, 0)!.headerLength);
+        }
+        if (done) return null;
       }
-      reader.cancel().catch(() => {});
     } catch {
-      // No index: seeking falls back to bitrate estimation.
+      return null; // Missing index/fonts only degrade features, never playback.
     } finally {
-      this.cuesLoading = false;
+      ac.abort();
     }
   }
 
@@ -769,4 +859,16 @@ function codecFrameDurationNs(t: MkvTrack): number | undefined {
   const samples: Record<string, number> = { 'A_MPEG/L3': 1152, A_AC3: 1536, A_EAC3: 1536 };
   const n = t.codecId.startsWith('A_AAC') ? 1024 : samples[t.codecId];
   return n ? (n / sr) * 1e9 : undefined;
+}
+
+function concat(parts: Uint8Array[], length: number): Uint8Array {
+  const out = new Uint8Array(length);
+  let o = 0;
+  for (const p of parts) {
+    if (o >= length) break;
+    const n = Math.min(p.length, length - o);
+    out.set(p.subarray(0, n), o);
+    o += n;
+  }
+  return out;
 }

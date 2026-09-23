@@ -147,3 +147,32 @@ describe('MkvDemuxer keyframe index', () => {
     expect(chunk.data).toEqual(same.data);
   });
 });
+
+describe('MkvDemuxer subtitles and attachments', () => {
+  it('exposes ASS tracks, streams events as libass chunks and extracts embedded fonts', async () => {
+    const { source } = memorySource(loadFile('public/samples/sample-subs.mkv'));
+    const out = collectingSink();
+    const chunks: { track: number; data: string; start: number; duration: number }[] = [];
+    const demuxer = new MkvDemuxer(source, { ...out.sink, onSubtitle: (c) => chunks.push(c) });
+    const tracks = await demuxer.open();
+    demuxer.start();
+    await out.done;
+
+    expect(tracks.subtitles).toHaveLength(1);
+    const sub = tracks.subtitles[0];
+    expect(sub.format).toBe('ass');
+    expect(sub.language).toBe('rus');
+    expect(sub.name).toBe('Русские (ASS)');
+    expect(sub.header).toContain('[V4+ Styles]');
+    expect(sub.header).toContain('Style: Sign,DejaVu Sans');
+
+    expect(chunks).toHaveLength(4);
+    expect(chunks[0].start).toBeCloseTo(0.5, 2);
+    expect(chunks[0].duration).toBeCloseTo(3.5, 2);
+    expect(chunks[0].data).toMatch(/^\d+,0,Default,,0,0,0,,Субтитры ASS через libass$/);
+    expect(chunks.some((c) => c.data.includes('\\k40'))).toBe(true);
+
+    expect(tracks.fonts).toHaveLength(1);
+    expect(Array.from(tracks.fonts[0].subarray(0, 4))).toEqual([0, 1, 0, 0]); // TrueType magic
+  });
+});

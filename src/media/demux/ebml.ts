@@ -55,6 +55,10 @@ export const ID = {
   Chapters: 0x1043a770,
   Tags: 0x1254c367,
   Attachments: 0x1941a469,
+  AttachedFile: 0x61a7,
+  FileName: 0x466e,
+  FileMimeType: 0x4660,
+  FileData: 0x465c,
   Void: 0xec,
   CRC32: 0xbf,
 } as const;

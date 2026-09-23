@@ -6,6 +6,8 @@ import { SeekBar } from './SeekBar';
 import { TimeDisplay } from './TimeDisplay';
 import { StatsOverlay } from './StatsOverlay';
 import { PictureMenu } from './PictureMenu';
+import { SubtitlesMenu } from './SubtitlesMenu';
+import { isSubtitleFile } from '../shared/subtitles';
 import {
   CameraIcon,
   FullscreenIcon,
@@ -15,6 +17,7 @@ import {
   ReplayIcon,
   SparklesIcon,
   StatsIcon,
+  SubtitlesIcon,
   TuneIcon,
   UploadIcon,
   VolumeIcon,
@@ -35,6 +38,7 @@ function videoRect(host: HTMLElement, aspect: number) {
 
 export interface VideoPlayerHandle {
   load(source: MediaSourceInput): void;
+  loadSubtitles(file: File): void;
 }
 
 export function VideoPlayer({ onReady }: { onReady?: (player: VideoPlayerHandle) => void }) {
@@ -46,6 +50,7 @@ export function VideoPlayer({ onReady }: { onReady?: (player: VideoPlayerHandle)
   const [fullscreen, setFullscreen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [showPicture, setShowPicture] = useState(false);
+  const [showSubs, setShowSubs] = useState(false);
   const panDrag = useRef<{ x: number; y: number; moved: boolean } | null>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -80,7 +85,7 @@ export function VideoPlayer({ onReady }: { onReady?: (player: VideoPlayerHandle)
   }, [host, player, aspect]);
 
   useEffect(() => {
-    if (player) onReady?.({ load: (s) => player.load(s) });
+    if (player) onReady?.({ load: (s) => player.load(s), loadSubtitles: (f) => void player.loadSubtitleFile(f) });
   }, [player, onReady]);
 
   // ------------------------------------------------ auto-hiding chrome
@@ -96,6 +101,11 @@ export function VideoPlayer({ onReady }: { onReady?: (player: VideoPlayerHandle)
     } else poke();
     return () => clearTimeout(hideTimer.current);
   }, [playing, poke]);
+
+  // Plain-text subtitles move above the controls while they're shown.
+  useEffect(() => {
+    player?.setControlsInset(chromeVisible && hasMedia ? 64 : 0);
+  }, [player, chromeVisible, hasMedia, snap.subtitles.active]);
 
   // ------------------------------------------------ fullscreen
   const toggleFullscreen = useCallback(() => {
@@ -133,7 +143,9 @@ export function VideoPlayer({ onReady }: { onReady?: (player: VideoPlayerHandle)
     e.preventDefault();
     setDragOver(false);
     const file = e.dataTransfer.files[0];
-    if (file && player) player.load({ kind: 'file', file });
+    if (!file || !player) return;
+    if (isSubtitleFile(file.name)) void player.loadSubtitleFile(file);
+    else player.load({ kind: 'file', file });
   };
 
   return (
@@ -171,7 +183,7 @@ export function VideoPlayer({ onReady }: { onReady?: (player: VideoPlayerHandle)
         onPointerUp={() => {
           const d = panDrag.current;
           panDrag.current = null;
-          if (showPicture) return setShowPicture(false);
+          if (showPicture || showSubs) return setShowPicture(false), setShowSubs(false);
           if (!d?.moved && hasMedia) player?.togglePlay();
         }}
         onDoubleClick={toggleFullscreen}
@@ -237,6 +249,7 @@ export function VideoPlayer({ onReady }: { onReady?: (player: VideoPlayerHandle)
       {showStats && player && <StatsOverlay controller={player} snapshot={snap} />}
 
       {showPicture && player && hasMedia && <PictureMenu player={player} snap={snap} onClose={() => setShowPicture(false)} />}
+      {showSubs && player && hasMedia && <SubtitlesMenu player={player} snap={snap} onClose={() => setShowSubs(false)} />}
 
       {player && hasMedia && (
         <Controls
@@ -256,7 +269,10 @@ export function VideoPlayer({ onReady }: { onReady?: (player: VideoPlayerHandle)
           duration={snap.info?.duration ?? 0}
           aspect={aspect}
           showPicture={showPicture}
-          onTogglePicture={() => setShowPicture((v) => !v)}
+          onTogglePicture={() => (setShowPicture((v) => !v), setShowSubs(false))}
+          subtitlesOn={snap.subtitles.active !== null}
+          showSubs={showSubs}
+          onToggleSubs={() => (setShowSubs((v) => !v), setShowPicture(false))}
         />
       )}
     </div>
@@ -278,6 +294,9 @@ interface ControlsProps {
   duration: number;
   aspect: number;
   showPicture: boolean;
+  subtitlesOn: boolean;
+  showSubs: boolean;
+  onToggleSubs(): void;
   onToggleStats(): void;
   onToggleFullscreen(): void;
   onTogglePicture(): void;
@@ -336,6 +355,9 @@ function Controls(p: ControlsProps) {
             {p.loop && <span className="absolute -top-1.5 -right-2 text-[9px] font-bold">{p.loop.b === null ? 'A' : 'AB'}</span>}
           </span>
         </IconButton>
+        <IconButton label="Subtitles (c)" onClick={p.onToggleSubs} active={p.subtitlesOn || p.showSubs}>
+          <SubtitlesIcon className="size-5" />
+        </IconButton>
         <IconButton label="Save frame as PNG (x)" onClick={() => p.player.snapshotFrame()}>
           <CameraIcon className="size-5" />
         </IconButton>
@@ -384,6 +406,9 @@ function handleKey(
       return true;
     case 'x':
       player.snapshotFrame();
+      return true;
+    case 'c':
+      player.cycleSubtitles();
       return true;
     case 'b':
       player.cycleLoop();

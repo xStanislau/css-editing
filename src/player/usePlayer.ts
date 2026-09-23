@@ -15,6 +15,7 @@ const IDLE: PlayerSnapshot = {
   picture: DEFAULT_PICTURE,
   view: DEFAULT_VIEW,
   loop: null,
+  subtitles: { tracks: [], external: null, active: null },
 };
 const noopSubscribe = () => () => {};
 

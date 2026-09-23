@@ -31,6 +31,7 @@ read cursor is the master clock.
 | Containers | **MP4** (mp4box.js) and **MKV/WebM** (our own streaming parser): lacing, live WebM with unknown sizes, Cues-based seeking with a bitrate-estimate fallback, Opus CodecDelay, header stripping. The container is detected from its magic bytes. |
 | Startup | Progressive parsing shows the first frame before the download finishes. `moov`-at-end files jump straight to the index with HTTP Range requests. |
 | Seek previews | Hovering the seek bar shows **real decoded frames**. A separate preview decoder fetches just the needed keyframe by byte range (from the MP4 sample table or the MKV Cues) and scales it down. Results are cached, neighbours are prefetched, and local files are warmed up in advance. Clicking a previewed spot puts that frame on screen immediately while the exact frame decodes. |
+| Subtitles | **ASS/SSA rendered by libass** (WebAssembly via JASSUB, in its own worker): styles, karaoke, `\move`, fades and positioning. Fonts embedded in MKV attachments are used. SRT/WebVTT tracks and external files (drag & drop or file picker) are converted to ASS. libass loads lazily, only when subtitles exist. Plain-text subtitles move above the controls; ASS typesetting stays locked to the picture. |
 | Frame pacing | The audio clock advances in ~10 ms bursts, so a PLL smooths it. Frames are chosen for the vsync they will actually land on, using the measured refresh rate. The result is a clean 3:2 cadence for 24p on 60 Hz and a perfect 5:5 on 120 Hz, verified by a simulation test. Pacing jitter shows in the stats overlay. |
 | Seeking | The in-flight request is aborted and reopened at the keyframe offset. Pre-roll frames are decoded but hidden, so the landing is frame-accurate. The last frame stays on screen (no black flash), and scrubbing is coalesced to one seek per display frame. |
 | Resilience | Hidden tabs keep audio fed from a timer when rAF stops. Lost GPU devices are rebuilt with backoff and a retry budget. Undecodable audio falls back to a muted wall clock. When audio ends before video, a wall-clock tail finishes the video. |
@@ -121,7 +122,7 @@ Reference ports: [SegaraRai/anime4k-wgpu](https://github.com/SegaraRai/anime4k-w
 ## Keyboard
 
 `Space`/`K` play · `←`/`→` ±5s · `J`/`L` ±10s · `0–9` jump · `,`/`.` frame step · `B` loop ·
-`X` save frame · `+`/`−`/`Z` zoom · `↑`/`↓` volume · `M` mute · `E` enhance · `S` stats · `F` fullscreen
+`X` save frame · `C` subtitles · `+`/`−`/`Z` zoom · `↑`/`↓` volume · `M` mute · `E` enhance · `S` stats · `F` fullscreen
 
 ## Roadmap
 

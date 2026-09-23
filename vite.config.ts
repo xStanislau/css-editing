@@ -21,5 +21,8 @@ export default defineConfig({
   server: { headers: isolationHeaders },
   preview: { headers: isolationHeaders },
   worker: { format: 'es' },
+  // JASSUB resolves its worker and WASM via new URL(..., import.meta.url);
+  // pre-bundling would break those relative paths in dev.
+  optimizeDeps: { exclude: ['jassub'] },
   build: { target: 'es2022' },
 });

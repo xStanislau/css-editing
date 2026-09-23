@@ -3,6 +3,7 @@ import { VideoPlayer, type VideoPlayerHandle } from './ui/VideoPlayer';
 import { SourceBar } from './ui/SourceBar';
 import { detectCapabilities } from './ui/capabilities';
 import { CompatPlayer } from './ui/CompatPlayer';
+import { isSubtitleFile } from './shared/subtitles';
 import type { MediaSourceInput } from './shared/protocol';
 
 const SHORTCUTS = [
@@ -13,6 +14,7 @@ const SHORTCUTS = [
   [', / .', 'Frame step'],
   ['B', 'Loop A-B'],
   ['X', 'Save frame'],
+  ['C', 'Subtitles'],
   ['Ctrl+scroll / + −', 'Zoom'],
   ['↑ / ↓', 'Volume'],
   ['M', 'Mute'],
@@ -26,7 +28,13 @@ export function App() {
   const missing = caps.filter((c) => !c.ok);
   const [player, setPlayer] = useState<VideoPlayerHandle | null>(null);
   const onReady = useCallback((p: VideoPlayerHandle) => setPlayer(p), []);
-  const load = useCallback((s: MediaSourceInput) => player?.load(s), [player]);
+  const load = useCallback(
+    (s: MediaSourceInput) => {
+      if (s.kind === 'file' && isSubtitleFile(s.file.name)) player?.loadSubtitles(s.file);
+      else player?.load(s);
+    },
+    [player],
+  );
 
   return (
     <main className="mx-auto flex min-h-screen max-w-6xl flex-col gap-6 px-4 py-8 sm:px-6">

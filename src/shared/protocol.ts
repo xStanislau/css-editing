@@ -40,12 +40,32 @@ export interface LoopRange {
   b: number;
 }
 
+/** A text subtitle track (ASS, or SRT/WebVTT converted to ASS). */
+export interface SubtitleTrack {
+  id: number;
+  format: 'ass' | 'text';
+  language?: string;
+  name?: string;
+  isDefault: boolean;
+  /** Full ASS header ([Script Info], styles, [Events] format line). */
+  header: string;
+}
+
+/** One subtitle event in Matroska ASS chunk form, for libass `processChunk`. */
+export interface SubtitleChunk {
+  track: number;
+  data: string;
+  start: number; // seconds
+  duration: number; // seconds
+}
+
 export interface MediaInfo {
   duration: number;
   video: { codec: string; width: number; height: number; fps: number; hardware: boolean } | null;
   audio: { codec: string; sampleRate: number; channels: number } | null;
   container: string;
   progressive: boolean;
+  subtitles: SubtitleTrack[];
 }
 
 // ------------------------------------------------------------ UI -> worker
@@ -83,6 +103,9 @@ export type FromWorker =
   | { type: 'snapshot'; blob: Blob; time: number }
   /** Real decoded keyframe for the seek-bar tooltip (null if unavailable). */
   | { type: 'preview'; id: number; time: number; bitmap: ImageBitmap | null }
+  | { type: 'subtitle-chunks'; chunks: SubtitleChunk[] }
+  /** Embedded fonts (MKV attachments) for ASS typesetting. */
+  | { type: 'fonts'; fonts: Uint8Array[] }
   /** Informational message (e.g. automatic quality change), not an error. */
   | { type: 'notice'; message: string }
   | { type: 'error'; message: string; fatal: boolean };
