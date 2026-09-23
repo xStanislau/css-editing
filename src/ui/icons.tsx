@@ -39,3 +39,20 @@ export const UploadIcon = (p: P) => (
     <path d="M12 16V4m0 0L7 9m5-5 5 5M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
   </svg>
 );
+export const TuneIcon = (p: P) => (
+  <svg {...base(p)} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+    <path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1" />
+    <circle cx="15" cy="6" r="2" /><circle cx="9" cy="12" r="2" /><circle cx="17" cy="18" r="2" />
+  </svg>
+);
+export const CameraIcon = (p: P) => (
+  <svg {...base(p)} fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+    <path d="M4 8a2 2 0 0 1 2-2h2l1.5-2h5L16 6h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8Z" />
+    <circle cx="12" cy="12.5" r="3.5" />
+  </svg>
+);
+export const LoopIcon = (p: P) => (
+  <svg {...base(p)} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M17 2l3 3-3 3" /><path d="M4 11V9a4 4 0 0 1 4-4h12" /><path d="M7 22l-3-3 3-3" /><path d="M20 13v2a4 4 0 0 1-4 4H4" />
+  </svg>
+);

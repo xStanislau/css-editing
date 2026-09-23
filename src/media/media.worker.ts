@@ -36,6 +36,21 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
       case 'set-render-mode':
         engine.setRenderMode(msg.mode);
         break;
+      case 'set-picture':
+        engine.setPicture(msg.picture);
+        break;
+      case 'set-view':
+        engine.setView(msg.view);
+        break;
+      case 'set-loop':
+        engine.setLoop(msg.loop);
+        break;
+      case 'step-frame':
+        engine.stepFrame(msg.direction);
+        break;
+      case 'snapshot':
+        engine.snapshot();
+        break;
       case 'audio-latency':
         engine.setOutputLatency(msg.seconds);
         break;

@@ -1,5 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { PlayerController, type PlayerSnapshot } from './PlayerController';
+import { DEFAULT_PICTURE, DEFAULT_VIEW } from '../shared/protocol';
 
 const IDLE: PlayerSnapshot = {
   state: 'idle',
@@ -10,6 +11,10 @@ const IDLE: PlayerSnapshot = {
   volume: 1,
   muted: false,
   error: null,
+  notice: null,
+  picture: DEFAULT_PICTURE,
+  view: DEFAULT_VIEW,
+  loop: null,
 };
 const noopSubscribe = () => () => {};
 

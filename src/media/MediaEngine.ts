@@ -1,4 +1,15 @@
-import type { FromWorker, MediaInfo, MediaSourceInput, PlaybackState, RenderMode } from '../shared/protocol';
+import {
+  DEFAULT_PICTURE,
+  DEFAULT_VIEW,
+  type FromWorker,
+  type LoopRange,
+  type MediaInfo,
+  type MediaSourceInput,
+  type PictureSettings,
+  type PlaybackState,
+  type RenderMode,
+  type ViewSettings,
+} from '../shared/protocol';
 import { T, Telemetry } from '../shared/telemetry';
 import type { AudioRing } from '../shared/audioRing';
 import { createByteSource } from './source/ByteSource';
@@ -19,6 +30,9 @@ const START_VIDEO_FRAMES = 3;
 const SERVICE_INTERVAL_MS = 50;
 /** GPU device-loss recoveries allowed per 30s before giving up. */
 const MAX_GPU_RECOVERIES = 3;
+/** Enhanced mode falls back to direct if more than this share of frames drop over the window. */
+const AUTO_DEGRADE_DROP_RATIO = 0.2;
+const AUTO_DEGRADE_WINDOW_MS = 3000;
 
 type Post = (msg: FromWorker, transfer?: Transferable[]) => void;
 
@@ -64,6 +78,12 @@ export class MediaEngine implements DemuxSink {
   private serviceTimer: ReturnType<typeof setInterval> | null = null;
   private gpuRecoveries: number[] = [];
   private disposed = false;
+  private picture: PictureSettings = DEFAULT_PICTURE;
+  private view: ViewSettings = DEFAULT_VIEW;
+  private loop: LoopRange | null = null;
+  private lastSeekTarget = 0;
+  /** Presented/dropped counters at the start of the auto-degrade window. */
+  private degradeWindow = { start: 0, presented: 0, dropped: 0 };
 
   constructor(private readonly post: Post) {}
 
@@ -79,6 +99,7 @@ export class MediaEngine implements DemuxSink {
 
   async load(input: MediaSourceInput): Promise<void> {
     this.unload();
+    this.loop = null;
     const gen = ++this.loadGeneration;
     this.setState('loading');
     this.preroll = true;
@@ -164,6 +185,7 @@ export class MediaEngine implements DemuxSink {
     const m = this.media;
     if (!m) return;
     const target = Math.max(0, Math.min(time, m.info.duration || time));
+    this.lastSeekTarget = target;
     m.clock.pause();
     m.video?.reset(target);
     m.audio?.reset(target);
@@ -186,6 +208,55 @@ export class MediaEngine implements DemuxSink {
     this.renderer?.setMode(mode);
     this.needsRedraw = true;
     this.post({ type: 'render-mode', mode });
+  }
+
+  setPicture(picture: PictureSettings): void {
+    this.picture = picture;
+    this.renderer?.setPicture(picture);
+    this.needsRedraw = true;
+  }
+
+  setView(view: ViewSettings): void {
+    this.view = view;
+    this.renderer?.setView(view);
+    this.needsRedraw = true;
+  }
+
+  setLoop(loop: LoopRange | null): void {
+    this.loop = loop && loop.b > loop.a ? loop : null;
+  }
+
+  /**
+   * Frame-accurate step. Implemented as an accurate seek (decode from the
+   * keyframe, show the frame covering the target) so audio stays aligned
+   * when playback resumes. The target lands a quarter-frame into the wanted
+   * frame to be robust against timestamp rounding.
+   */
+  stepFrame(direction: 1 | -1): void {
+    const m = this.media;
+    if (!m?.video) return;
+    if (this.wantPlay) this.pause();
+    const frameDuration = 1 / (m.info.video?.fps || 30);
+    // While a previous step is still decoding, continue from its target so
+    // holding the key walks frame by frame instead of repeating one step.
+    const now = this.preroll ? this.lastSeekTarget - frameDuration / 4 : this.current ? this.current.timestamp / 1e6 : m.clock.now();
+    this.seek(Math.max(0, now + direction * frameDuration + frameDuration / 4));
+  }
+
+  snapshot(): void {
+    const frame = this.current;
+    if (!frame || !this.renderer) {
+      this.post({ type: 'notice', message: 'Nothing to capture yet' });
+      return;
+    }
+    const time = frame.timestamp / 1e6;
+    // Keep the frame alive for the async encode even if playback moves on.
+    const copy = frame.clone();
+    this.renderer
+      .snapshot(copy)
+      .then((blob) => this.post({ type: 'snapshot', blob, time }))
+      .catch((e) => this.post({ type: 'error', message: `Snapshot failed: ${e instanceof Error ? e.message : e}`, fatal: false }))
+      .finally(() => copy.close());
   }
 
   setOutputLatency(seconds: number): void {
@@ -258,8 +329,13 @@ export class MediaEngine implements DemuxSink {
     m.video?.feed();
     this.updatePlaybackState(m);
 
-    const t = m.clock.now();
+    let t = m.clock.now();
+    if (this.loop && this.state === 'playing' && t >= this.loop.b) {
+      this.seek(this.loop.a);
+      t = this.loop.a;
+    }
     this.selectFrame(m, t, visible);
+    if (visible) this.checkAutoDegrade();
     this.resolveDemand(false);
     this.writeTelemetry(t);
   }
@@ -345,6 +421,27 @@ export class MediaEngine implements DemuxSink {
       this.fps = (this.fpsCount * 1000) / (now - this.fpsWindowStart);
       this.fpsCount = 0;
       this.fpsWindowStart = now;
+    }
+  }
+
+  /**
+   * If the enhancement graph can't keep up on this device, drop back to the
+   * zero-copy path instead of stuttering, and tell the user why.
+   */
+  private checkAutoDegrade(): void {
+    const now = performance.now();
+    const w = this.degradeWindow;
+    if (this.renderMode !== 'enhanced' || this.state !== 'playing') {
+      this.degradeWindow = { start: now, presented: this.presented, dropped: this.dropped };
+      return;
+    }
+    if (now - w.start < AUTO_DEGRADE_WINDOW_MS) return;
+    const presented = this.presented - w.presented;
+    const dropped = this.dropped - w.dropped;
+    this.degradeWindow = { start: now, presented: this.presented, dropped: this.dropped };
+    if (presented + dropped > 10 && dropped / (presented + dropped) > AUTO_DEGRADE_DROP_RATIO) {
+      this.setRenderMode('direct');
+      this.post({ type: 'notice', message: 'Enhancement paused: this device dropped too many frames. Press E to try again.' });
     }
   }
 
@@ -434,6 +531,8 @@ export class MediaEngine implements DemuxSink {
       const renderer = await WebGpuRenderer.create(this.canvas, (reason) => this.onDeviceLost(reason));
       if (this.disposed) return renderer.destroy();
       renderer.setMode(this.renderMode);
+      renderer.setPicture(this.picture);
+      renderer.setView(this.view);
       const previous = this.renderer;
       this.renderer = renderer;
       previous?.destroy();

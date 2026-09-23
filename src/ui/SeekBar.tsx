@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState, type CSSProperties } from 'react';
-import type { PlayerController } from '../player/PlayerController';
+import type { PlayerController, PlayerSnapshot } from '../player/PlayerController';
 import { useFrame } from '../player/usePlayer';
 import { T } from '../shared/telemetry';
 import { formatTime } from './format';
@@ -9,7 +9,7 @@ import { formatTime } from './format';
  * refresh rate. Progress is applied as a compositor-only transform through a
  * CSS variable, so it never triggers React renders or layout.
  */
-export function SeekBar({ controller }: { controller: PlayerController }) {
+export function SeekBar({ controller, loop, duration }: { controller: PlayerController; loop?: PlayerSnapshot['loop']; duration?: number }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const dragFraction = useRef<number | null>(null);
@@ -99,6 +99,7 @@ export function SeekBar({ controller }: { controller: PlayerController }) {
         <div className="absolute inset-0 origin-left bg-white/35" style={{ transform: 'scaleX(var(--buffered))' }} />
         <div className="absolute inset-0 origin-left bg-accent" style={{ transform: 'scaleX(var(--played))' }} />
       </div>
+      {loop && duration ? <LoopMarkers loop={loop} duration={duration} /> : null}
       <div
         className={`pointer-events-none absolute top-1/2 size-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow-lg shadow-black/40 transition-transform duration-150 ${dragging ? 'scale-100' : 'scale-0 group-hover/seek:scale-100 group-focus-visible/seek:scale-100'}`}
         style={{ left: 'calc(var(--played) * 100%)' }}
@@ -107,6 +108,19 @@ export function SeekBar({ controller }: { controller: PlayerController }) {
         ref={tooltipRef}
         className="pointer-events-none absolute bottom-6 -translate-x-1/2 rounded-md bg-black/80 px-2 py-1 font-mono text-xs text-white opacity-0 backdrop-blur transition-opacity group-hover/seek:opacity-100"
       />
+    </div>
+  );
+}
+
+/** A-B loop band and handles drawn over the seek track. */
+function LoopMarkers({ loop, duration }: { loop: NonNullable<PlayerSnapshot['loop']>; duration: number }) {
+  const a = (loop.a / duration) * 100;
+  const b = loop.b === null ? null : (loop.b / duration) * 100;
+  return (
+    <div className="pointer-events-none absolute inset-x-0 top-1/2 h-3 -translate-y-1/2">
+      {b !== null && <div className="absolute inset-y-0 rounded-sm bg-amber-400/30" style={{ left: `${a}%`, width: `${b - a}%` }} />}
+      <div className="absolute inset-y-0 w-0.5 bg-amber-400" style={{ left: `${a}%` }} />
+      {b !== null && <div className="absolute inset-y-0 w-0.5 bg-amber-400" style={{ left: `${b}%` }} />}
     </div>
   );
 }

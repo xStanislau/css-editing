@@ -83,6 +83,17 @@ src/
   ui/                Tailwind components: player, seek bar, stats, source bar
 ```
 
+## Pro tools
+
+| Tool | How |
+| --- | --- |
+| Frame step | `,` / `.`. It's an accurate seek, so audio stays aligned when you resume, and holding the key walks frame by frame. |
+| Save frame | `X` or the camera button. The PNG is rendered at full resolution as displayed, including enhancement and picture settings, and the filename carries the timecode and frame number. |
+| A-B loop | `B` sets A, `B` again sets B, a third `B` clears. The range is drawn on the seek bar. |
+| Picture | Brightness, contrast, saturation and sharpness sliders. They are applied in the present shader, so they cost no extra pass. Double-click a slider to reset it. |
+| Zoom | Ctrl/⌘ + scroll or a trackpad pinch zooms around the cursor. Drag to pan, `+`/`−` to step, `Z` to reset. |
+| Auto quality | If the enhancement graph drops over 20% of frames for 3s, the player falls back to the zero-copy path and says why. |
+
 ## Injecting Anime4K
 
 Press **E** (or click **Enhance**) to switch to the compute path:
@@ -105,8 +116,8 @@ Reference ports: [SegaraRai/anime4k-wgpu](https://github.com/SegaraRai/anime4k-w
 
 ## Keyboard
 
-`Space`/`K` play · `←`/`→` ±5s · `J`/`L` ±10s · `0–9` jump · `↑`/`↓` volume · `M` mute ·
-`E` enhance · `S` stats · `F` fullscreen
+`Space`/`K` play · `←`/`→` ±5s · `J`/`L` ±10s · `0–9` jump · `,`/`.` frame step · `B` loop ·
+`X` save frame · `+`/`−`/`Z` zoom · `↑`/`↓` volume · `M` mute · `E` enhance · `S` stats · `F` fullscreen
 
 ## Roadmap
 

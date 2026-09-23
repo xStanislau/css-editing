@@ -1,14 +1,38 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react';
 import { usePlayer } from '../player/usePlayer';
-import type { PlayerController } from '../player/PlayerController';
+import type { PlayerController, PlayerSnapshot } from '../player/PlayerController';
 import type { MediaSourceInput } from '../shared/protocol';
 import { T } from '../shared/telemetry';
 import { SeekBar } from './SeekBar';
 import { TimeDisplay } from './TimeDisplay';
 import { StatsOverlay } from './StatsOverlay';
-import { FullscreenIcon, PauseIcon, PlayIcon, ReplayIcon, SparklesIcon, StatsIcon, UploadIcon, VolumeIcon } from './icons';
+import { PictureMenu } from './PictureMenu';
+import {
+  CameraIcon,
+  FullscreenIcon,
+  LoopIcon,
+  PauseIcon,
+  PlayIcon,
+  ReplayIcon,
+  SparklesIcon,
+  StatsIcon,
+  TuneIcon,
+  UploadIcon,
+  VolumeIcon,
+} from './icons';
 
 const IDLE_HIDE_MS = 2500;
+const NOTICE_MS = 3500;
+/** Pointer travel (px) that turns a click into a pan drag. */
+const DRAG_THRESHOLD = 4;
+
+/** Where the letterboxed video sits inside the host element. */
+function videoRect(host: HTMLElement, aspect: number) {
+  const r = host.getBoundingClientRect();
+  const width = Math.min(r.width, r.height * aspect);
+  const height = width / aspect;
+  return { left: r.left + (r.width - width) / 2, top: r.top + (r.height - height) / 2, width, height };
+}
 
 export interface VideoPlayerHandle {
   load(source: MediaSourceInput): void;
@@ -22,11 +46,39 @@ export function VideoPlayer({ onReady }: { onReady?: (player: VideoPlayerHandle)
   const [chromeVisible, setChromeVisible] = useState(true);
   const [fullscreen, setFullscreen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [showPicture, setShowPicture] = useState(false);
+  const panDrag = useRef<{ x: number; y: number; moved: boolean } | null>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const playing = snap.state === 'playing' || snap.state === 'buffering';
   const hasMedia = snap.info !== null;
   const spinner = snap.state === 'loading' || (snap.state === 'buffering' && hasMedia);
+  const aspect = snap.info?.video ? snap.info.video.width / snap.info.video.height : 16 / 9;
+  const zoomed = snap.view.zoom > 1.001;
+
+  // ------------------------------------------------ notices auto-dismiss
+  useEffect(() => {
+    if (!snap.notice || !player) return;
+    const t = setTimeout(() => player.dismissNotice(), NOTICE_MS);
+    return () => clearTimeout(t);
+  }, [snap.notice, player]);
+
+  // ------------------------------------------------ zoom: Ctrl/⌘ + wheel, trackpad pinch
+  // Native non-passive listener: React's onWheel can't preventDefault, and
+  // Ctrl+wheel would otherwise zoom the whole page.
+  useEffect(() => {
+    if (!host || !player) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || !player.getSnapshot().info) return;
+      e.preventDefault();
+      const r = videoRect(host, aspect);
+      const fx = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+      const fy = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height));
+      player.zoomAt(Math.exp(-e.deltaY * 0.01), fx, fy);
+    };
+    host.addEventListener('wheel', onWheel, { passive: false });
+    return () => host.removeEventListener('wheel', onWheel);
+  }, [host, player, aspect]);
 
   useEffect(() => {
     if (player) onReady?.({ load: (s) => player.load(s) });
@@ -63,7 +115,11 @@ export function VideoPlayer({ onReady }: { onReady?: (player: VideoPlayerHandle)
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
       if (target.closest('input, textarea, [contenteditable]') || e.metaKey || e.ctrlKey || e.altKey) return;
-      const handled = handleKey(player, e.key, { toggleFullscreen, toggleStats: () => setShowStats((s) => !s), renderMode: snap.renderMode });
+      const handled = handleKey(player, e.key, {
+        toggleFullscreen,
+        toggleStats: () => setShowStats((s) => !s),
+        renderMode: snap.renderMode,
+      });
       if (handled) {
         e.preventDefault();
         poke();
@@ -97,10 +153,49 @@ export function VideoPlayer({ onReady }: { onReady?: (player: VideoPlayerHandle)
       {/* The worker renders here; PlayerController injects the <canvas>. */}
       <div
         ref={setHost}
-        className="absolute inset-0"
-        onClick={() => hasMedia && player?.togglePlay()}
+        className={`absolute inset-0 ${zoomed ? 'cursor-grab active:cursor-grabbing' : ''}`}
+        onPointerDown={(e) => {
+          if (e.button !== 0) return;
+          panDrag.current = { x: e.clientX, y: e.clientY, moved: false };
+          if (zoomed) e.currentTarget.setPointerCapture(e.pointerId);
+        }}
+        onPointerMove={(e) => {
+          const d = panDrag.current;
+          if (!d || !zoomed || !host) return;
+          if (!d.moved && Math.hypot(e.clientX - d.x, e.clientY - d.y) < DRAG_THRESHOLD) return;
+          d.moved = true;
+          const r = videoRect(host, aspect);
+          player?.panBy((e.clientX - d.x) / r.width, (e.clientY - d.y) / r.height);
+          d.x = e.clientX;
+          d.y = e.clientY;
+        }}
+        onPointerUp={() => {
+          const d = panDrag.current;
+          panDrag.current = null;
+          if (showPicture) return setShowPicture(false);
+          if (!d?.moved && hasMedia) player?.togglePlay();
+        }}
         onDoubleClick={toggleFullscreen}
       />
+
+      {zoomed && (
+        <button
+          className="absolute top-3 left-1/2 z-20 -translate-x-1/2 rounded-full bg-black/60 px-3 py-1 font-mono text-xs text-white ring-1 ring-white/15 backdrop-blur hover:bg-black/80"
+          onClick={() => player?.resetView()}
+          title="Reset zoom (z)"
+        >
+          {snap.view.zoom.toFixed(1)}× · reset
+        </button>
+      )}
+
+      {snap.notice && (
+        <div
+          key={snap.notice.id}
+          className="pointer-events-none absolute top-14 left-1/2 z-30 -translate-x-1/2 rounded-full bg-black/75 px-4 py-2 text-sm text-white ring-1 ring-white/15 backdrop-blur"
+        >
+          {snap.notice.message}
+        </div>
+      )}
 
       {!hasMedia && snap.state !== 'loading' && (
         <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 text-white/60">
@@ -142,6 +237,8 @@ export function VideoPlayer({ onReady }: { onReady?: (player: VideoPlayerHandle)
 
       {showStats && player && <StatsOverlay controller={player} snapshot={snap} />}
 
+      {showPicture && player && hasMedia && <PictureMenu player={player} snap={snap} onClose={() => setShowPicture(false)} />}
+
       {player && hasMedia && (
         <Controls
           player={player}
@@ -156,6 +253,10 @@ export function VideoPlayer({ onReady }: { onReady?: (player: VideoPlayerHandle)
           onToggleStats={() => setShowStats((s) => !s)}
           onToggleFullscreen={toggleFullscreen}
           title={snap.sourceName}
+          loop={snap.loop}
+          duration={snap.info?.duration ?? 0}
+          showPicture={showPicture}
+          onTogglePicture={() => setShowPicture((v) => !v)}
         />
       )}
     </div>
@@ -173,8 +274,12 @@ interface ControlsProps {
   showStats: boolean;
   fullscreen: boolean;
   title: string | null;
+  loop: PlayerSnapshot['loop'];
+  duration: number;
+  showPicture: boolean;
   onToggleStats(): void;
   onToggleFullscreen(): void;
+  onTogglePicture(): void;
 }
 
 function Controls(p: ControlsProps) {
@@ -183,7 +288,7 @@ function Controls(p: ControlsProps) {
     <div
       className={`absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/85 via-black/40 to-transparent px-4 pt-16 pb-3 transition-opacity duration-300 ${p.visible ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
     >
-      <SeekBar controller={p.player} />
+      <SeekBar controller={p.player} loop={p.loop} duration={p.duration} />
       <div className="mt-1.5 flex items-center gap-1 text-white">
         <IconButton label={p.playing ? 'Pause (k)' : p.ended ? 'Replay' : 'Play (k)'} onClick={() => p.player.togglePlay()}>
           {p.playing ? <PauseIcon className="size-6" /> : p.ended ? <ReplayIcon className="size-6" /> : <PlayIcon className="size-6" />}
@@ -220,6 +325,22 @@ function Controls(p: ControlsProps) {
           <SparklesIcon className="size-4" />
           {p.enhanced ? 'ENHANCED' : 'ENHANCE'}
         </button>
+        <IconButton
+          label={!p.loop ? 'Set loop start (b)' : p.loop.b === null ? 'Set loop end (b)' : 'Clear loop (b)'}
+          onClick={() => p.player.cycleLoop()}
+          active={p.loop !== null}
+        >
+          <span className="relative">
+            <LoopIcon className="size-5" />
+            {p.loop && <span className="absolute -top-1.5 -right-2 text-[9px] font-bold">{p.loop.b === null ? 'A' : 'AB'}</span>}
+          </span>
+        </IconButton>
+        <IconButton label="Save frame as PNG (x)" onClick={() => p.player.snapshotFrame()}>
+          <CameraIcon className="size-5" />
+        </IconButton>
+        <IconButton label="Picture settings" onClick={p.onTogglePicture} active={p.showPicture}>
+          <TuneIcon className="size-5" />
+        </IconButton>
         <IconButton label="Stats (s)" onClick={p.onToggleStats} active={p.showStats}>
           <StatsIcon className="size-5" />
         </IconButton>
@@ -247,9 +368,35 @@ function IconButton({ label, onClick, children, active }: { label: string; onCli
 function handleKey(
   player: PlayerController,
   key: string,
-  ctx: { toggleFullscreen(): void; toggleStats(): void; renderMode: string },
+  ctx: {
+    toggleFullscreen(): void;
+    toggleStats(): void;
+    renderMode: string;
+  },
 ): boolean {
   switch (key) {
+    case ',':
+      player.stepFrame(-1);
+      return true;
+    case '.':
+      player.stepFrame(1);
+      return true;
+    case 'x':
+      player.snapshotFrame();
+      return true;
+    case 'b':
+      player.cycleLoop();
+      return true;
+    case '+':
+    case '=':
+      player.zoomAt(1.25);
+      return true;
+    case '-':
+      player.zoomAt(0.8);
+      return true;
+    case 'z':
+      player.resetView();
+      return true;
     case ' ':
     case 'k':
       player.togglePlay();

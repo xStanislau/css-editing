@@ -1,6 +1,18 @@
 import MediaWorker from '../media/media.worker.ts?worker';
 import pcmWorkletUrl from '../audio/pcm-player.worklet.ts?worker&url';
-import type { FromWorker, MediaInfo, MediaSourceInput, PlaybackState, RenderMode, ToWorker } from '../shared/protocol';
+import {
+  DEFAULT_PICTURE,
+  DEFAULT_VIEW,
+  type FromWorker,
+  type LoopRange,
+  type MediaInfo,
+  type MediaSourceInput,
+  type PictureSettings,
+  type PlaybackState,
+  type RenderMode,
+  type ToWorker,
+  type ViewSettings,
+} from '../shared/protocol';
 import { T, Telemetry } from '../shared/telemetry';
 
 export interface PlayerSnapshot {
@@ -12,7 +24,14 @@ export interface PlayerSnapshot {
   volume: number;
   muted: boolean;
   error: { message: string; fatal: boolean; id: number } | null;
+  notice: { message: string; id: number } | null;
+  picture: PictureSettings;
+  view: ViewSettings;
+  /** A-B loop; `b` is null while only A is set. */
+  loop: { a: number; b: number | null } | null;
 }
+
+const MAX_ZOOM = 8;
 
 type FrameListener = (t: Float64Array) => void;
 
@@ -45,12 +64,22 @@ export class PlayerController {
     volume: 1,
     muted: false,
     error: null,
+    notice: null,
+    picture: DEFAULT_PICTURE,
+    view: DEFAULT_VIEW,
+    loop: null,
   };
   private readonly listeners = new Set<() => void>();
   private readonly frameListeners = new Set<FrameListener>();
   private rafId = 0;
   private errorSeq = 0;
   private disposed = false;
+  /**
+   * Target of the last seek until the worker's telemetry catches up, so
+   * rapid key presses (→ → →, 5 then B) build on each other instead of all
+   * reading the stale playhead.
+   */
+  private pendingSeek: { time: number; until: number } | null = null;
 
   constructor(host: HTMLElement) {
     // The canvas is created imperatively: transferControlToOffscreen() is a
@@ -116,7 +145,7 @@ export class PlayerController {
 
   load(source: MediaSourceInput): void {
     const sourceName = source.kind === 'file' ? source.file.name : source.url.split('/').pop() || source.url;
-    this.update({ info: null, error: null, sourceName });
+    this.update({ info: null, error: null, sourceName, loop: null });
     this.send({ type: 'load', source });
   }
 
@@ -137,12 +166,21 @@ export class PlayerController {
   }
 
   seek(time: number): void {
-    this.send({ type: 'seek', time });
+    const duration = this.readTelemetry()[T.Duration];
+    const target = Math.max(0, duration ? Math.min(time, duration) : time);
+    this.pendingSeek = { time: target, until: performance.now() + 400 };
+    this.send({ type: 'seek', time: target });
   }
 
   seekBy(delta: number): void {
-    const t = this.readTelemetry();
-    this.seek(Math.max(0, Math.min(t[T.CurrentTime] + delta, t[T.Duration] || Infinity)));
+    this.seek(this.currentTime() + delta);
+  }
+
+  /** Playhead in seconds, including a seek that the worker hasn't reported yet. */
+  currentTime(): number {
+    if (this.pendingSeek && performance.now() < this.pendingSeek.until) return this.pendingSeek.time;
+    this.pendingSeek = null;
+    return this.readTelemetry()[T.CurrentTime];
   }
 
   setVolume(volume: number): void {
@@ -162,6 +200,89 @@ export class PlayerController {
 
   dismissError(): void {
     this.update({ error: null });
+  }
+
+  dismissNotice(): void {
+    this.update({ notice: null });
+  }
+
+  // ------------------------------------------------------- picture / view
+
+  setPicture(patch: Partial<PictureSettings>): void {
+    const picture = { ...this.snapshot.picture, ...patch };
+    this.update({ picture });
+    this.send({ type: 'set-picture', picture });
+  }
+
+  resetPicture(): void {
+    this.setPicture(DEFAULT_PICTURE);
+  }
+
+  /**
+   * Zoom by `factor` keeping the video point under (fx, fy) fixed.
+   * fx/fy are 0..1 coordinates inside the displayed video rectangle.
+   */
+  zoomAt(factor: number, fx = 0.5, fy = 0.5): void {
+    const v = this.snapshot.view;
+    const zoom = Math.min(MAX_ZOOM, Math.max(1, v.zoom * factor));
+    // uv under the cursor must stay put: 0.5 + (f - 0.5) / zoom + pan
+    const ux = 0.5 + (fx - 0.5) / v.zoom + v.panX;
+    const uy = 0.5 + (fy - 0.5) / v.zoom + v.panY;
+    this.setView({ zoom, panX: ux - 0.5 - (fx - 0.5) / zoom, panY: uy - 0.5 - (fy - 0.5) / zoom });
+  }
+
+  /** Pan by a fraction of the displayed video size (drag delta / rect size). */
+  panBy(dx: number, dy: number): void {
+    const v = this.snapshot.view;
+    this.setView({ ...v, panX: v.panX - dx / v.zoom, panY: v.panY - dy / v.zoom });
+  }
+
+  resetView(): void {
+    this.setView(DEFAULT_VIEW);
+  }
+
+  private setView(view: ViewSettings): void {
+    // Keep the zoomed window inside the frame: |pan| <= 0.5 - 0.5 / zoom.
+    const limit = 0.5 - 0.5 / view.zoom;
+    const clamped = {
+      zoom: view.zoom,
+      panX: Math.max(-limit, Math.min(limit, view.panX)),
+      panY: Math.max(-limit, Math.min(limit, view.panY)),
+    };
+    this.update({ view: clamped });
+    this.send({ type: 'set-view', view: clamped });
+  }
+
+  // ------------------------------------------------------ precision tools
+
+  stepFrame(direction: 1 | -1): void {
+    this.send({ type: 'step-frame', direction });
+  }
+
+  /** Save the current frame (as displayed, at full resolution) as PNG. */
+  snapshotFrame(): void {
+    this.send({ type: 'snapshot' });
+  }
+
+  /** First press sets A, second sets B, third clears. */
+  cycleLoop(): void {
+    const t = this.currentTime();
+    const loop = this.snapshot.loop;
+    if (!loop) this.setLoopState({ a: t, b: null });
+    else if (loop.b === null) {
+      if (t > loop.a + 0.1) this.setLoopState({ a: loop.a, b: t });
+      else this.setLoopState({ a: t, b: null });
+    } else this.setLoopState(null);
+  }
+
+  clearLoop(): void {
+    this.setLoopState(null);
+  }
+
+  private setLoopState(loop: PlayerSnapshot['loop']): void {
+    this.update({ loop });
+    const range: LoopRange | null = loop && loop.b !== null ? { a: loop.a, b: loop.b } : null;
+    this.send({ type: 'set-loop', loop: range });
   }
 
   destroy(): void {
@@ -211,6 +332,12 @@ export class PlayerController {
       case 'error':
         this.setError(msg.message, msg.fatal);
         break;
+      case 'notice':
+        this.update({ notice: { message: msg.message, id: ++this.errorSeq } });
+        break;
+      case 'snapshot':
+        this.downloadSnapshot(msg.blob, msg.time);
+        break;
     }
   }
 
@@ -256,6 +383,17 @@ export class PlayerController {
 
     this.reportLatency();
     this.latencyTimer ??= setInterval(() => this.reportLatency(), 2000);
+  }
+
+  private downloadSnapshot(blob: Blob, time: number): void {
+    const base = (this.snapshot.sourceName ?? 'frame').replace(/\.[^.]+$/, '');
+    const fps = this.snapshot.info?.video?.fps || 30;
+    const stamp = `${Math.floor(time / 60)}m${Math.floor(time % 60).toString().padStart(2, '0')}s-f${Math.round((time % 1) * fps)}`;
+    const url = URL.createObjectURL(blob);
+    const a = Object.assign(document.createElement('a'), { href: url, download: `${base}-${stamp}.png` });
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    this.update({ notice: { message: `Saved ${a.download}`, id: ++this.errorSeq } });
   }
 
   private reportLatency(): void {

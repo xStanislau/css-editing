@@ -15,6 +15,31 @@ export type PlaybackState = 'idle' | 'loading' | 'ready' | 'playing' | 'paused' 
 
 export type RenderMode = 'direct' | 'enhanced';
 
+/** Colour controls applied in the present shader (WYSIWYG, also in snapshots). */
+export interface PictureSettings {
+  brightness: number;
+  contrast: number;
+  saturation: number;
+  sharpness: number;
+}
+
+export const DEFAULT_PICTURE: PictureSettings = { brightness: 0, contrast: 1, saturation: 1, sharpness: 0 };
+
+/** GPU zoom/pan. pan is in uv units, clamped so the view stays inside the frame. */
+export interface ViewSettings {
+  zoom: number;
+  panX: number;
+  panY: number;
+}
+
+export const DEFAULT_VIEW: ViewSettings = { zoom: 1, panX: 0, panY: 0 };
+
+/** A-B loop range in seconds. */
+export interface LoopRange {
+  a: number;
+  b: number;
+}
+
 export interface MediaInfo {
   duration: number;
   video: { codec: string; width: number; height: number; fps: number; hardware: boolean } | null;
@@ -33,6 +58,13 @@ export type ToWorker =
   | { type: 'seek'; time: number }
   | { type: 'resize'; width: number; height: number }
   | { type: 'set-render-mode'; mode: RenderMode }
+  | { type: 'set-picture'; picture: PictureSettings }
+  | { type: 'set-view'; view: ViewSettings }
+  | { type: 'set-loop'; loop: LoopRange | null }
+  /** Frame-accurate step while paused: +1 next frame, -1 previous frame. */
+  | { type: 'step-frame'; direction: 1 | -1 }
+  /** Render the current frame (with enhancement + picture settings) to PNG. */
+  | { type: 'snapshot' }
   /** Output latency reported by the AudioContext, so A/V sync matches what the user hears. */
   | { type: 'audio-latency'; seconds: number }
   | { type: 'dispose' };
@@ -46,4 +78,7 @@ export type FromWorker =
   | { type: 'audio-ring'; sab: SharedArrayBuffer; sampleRate: number; channels: number }
   | { type: 'state'; state: PlaybackState }
   | { type: 'render-mode'; mode: RenderMode }
+  | { type: 'snapshot'; blob: Blob; time: number }
+  /** Informational message (e.g. automatic quality change), not an error. */
+  | { type: 'notice'; message: string }
   | { type: 'error'; message: string; fatal: boolean };

@@ -1,7 +1,10 @@
 import presentWgsl from './shaders/present.wgsl?raw';
 import { EnhanceGraph } from './enhance/EnhanceGraph';
 import { ENHANCE_PASSES } from './enhance/passes';
-import type { RenderMode } from '../../shared/protocol';
+import { DEFAULT_PICTURE, DEFAULT_VIEW, type PictureSettings, type RenderMode, type ViewSettings } from '../../shared/protocol';
+
+/** Uniform block size in bytes (see `struct Uniforms` in present.wgsl). */
+const UNIFORM_BYTES = 48;
 
 /**
  * WebGPU presenter living entirely inside the media worker.
@@ -9,6 +12,9 @@ import type { RenderMode } from '../../shared/protocol';
  *  direct   : VideoFrame -> importExternalTexture -> present   (zero copy)
  *  enhanced : VideoFrame -> importExternalTexture -> EnhanceGraph (compute,
  *             Anime4K goes here) -> present
+ *
+ * The present pass also applies picture controls (colour, sharpness) and
+ * GPU zoom/pan, so they cost one fragment shader, not an extra pass.
  */
 export class WebGpuRenderer {
   private readonly ctx: GPUCanvasContext;
@@ -16,13 +22,13 @@ export class WebGpuRenderer {
   private readonly directPipeline: GPURenderPipeline;
   private readonly texturePipeline: GPURenderPipeline;
   private readonly uniforms: GPUBuffer;
-  private readonly uniformData = new Float32Array(4);
+  private readonly uniformData = new Float32Array(UNIFORM_BYTES / 4);
   private readonly sampler: GPUSampler;
   private enhance: EnhanceGraph | null = null;
   private mode: RenderMode = 'direct';
-  private lastAspect = 0;
-  private lastCanvasW = 0;
-  private lastCanvasH = 0;
+  private picture: PictureSettings = DEFAULT_PICTURE;
+  private view: ViewSettings = DEFAULT_VIEW;
+  private uniformsKey = '';
   /** @internal set when the device is lost; never touch a lost device. */
   _lost = false;
 
@@ -66,7 +72,7 @@ export class WebGpuRenderer {
     this.directPipeline = makePipeline('fs_external');
     this.texturePipeline = makePipeline('fs_texture');
 
-    this.uniforms = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.uniforms = device.createBuffer({ size: UNIFORM_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
   }
 
@@ -92,6 +98,14 @@ export class WebGpuRenderer {
     }
   }
 
+  setPicture(picture: PictureSettings): void {
+    this.picture = picture;
+  }
+
+  setView(view: ViewSettings): void {
+    this.view = view;
+  }
+
   resize(width: number, height: number): void {
     const w = Math.max(1, Math.round(width));
     const h = Math.max(1, Math.round(height));
@@ -110,56 +124,36 @@ export class WebGpuRenderer {
   /** Present one frame (false if skipped). The frame stays owned by the caller. */
   draw(frame: VideoFrame): boolean {
     if (this._lost) return false;
-    const device = this.device;
-    this.updateLetterbox(frame.displayWidth / frame.displayHeight);
-
-    // External textures are only valid until the current task ends, so they
-    // must be imported (and bound) fresh for every draw.
-    const external = device.importExternalTexture({ source: frame });
-    const encoder = device.createCommandEncoder({ label: 'frame' });
-
-    let bindGroup: GPUBindGroup;
-    let pipeline: GPURenderPipeline;
-    if (this.mode === 'enhanced' && this.enhance) {
-      const { width, height } = frame.visibleRect ?? { width: frame.codedWidth, height: frame.codedHeight };
-      this.enhance.encode(encoder, external, width, height);
-      pipeline = this.texturePipeline;
-      bindGroup = device.createBindGroup({
-        layout: pipeline.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: { buffer: this.uniforms } },
-          { binding: 1, resource: this.sampler },
-          { binding: 3, resource: this.enhance.output!.createView() },
-        ],
-      });
-    } else {
-      pipeline = this.directPipeline;
-      bindGroup = device.createBindGroup({
-        layout: pipeline.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: { buffer: this.uniforms } },
-          { binding: 1, resource: this.sampler },
-          { binding: 2, resource: external },
-        ],
-      });
-    }
-
-    const pass = encoder.beginRenderPass({
-      colorAttachments: [
-        {
-          view: this.ctx.getCurrentTexture().createView(),
-          clearValue: { r: 0, g: 0, b: 0, a: 1 },
-          loadOp: 'clear',
-          storeOp: 'store',
-        },
-      ],
-    });
-    pass.setPipeline(pipeline);
-    pass.setBindGroup(0, bindGroup);
-    pass.draw(4);
-    pass.end();
-    device.queue.submit([encoder.finish()]);
+    const encoder = this.device.createCommandEncoder({ label: 'frame' });
+    const texel = this.encodeSource(encoder, frame);
+    this.writeUniforms(this.uniforms, this.letterbox(frame, this.canvas.width, this.canvas.height), this.view, texel, true);
+    this.encodePresent(encoder, this.ctx.getCurrentTexture(), this.uniforms, frame);
+    this.device.queue.submit([encoder.finish()]);
     return true;
+  }
+
+  /**
+   * Render `frame` exactly as the user sees it (enhancement + picture
+   * controls) but at full source/output resolution, without zoom or
+   * letterboxing, and encode it as PNG.
+   */
+  async snapshot(frame: VideoFrame): Promise<Blob> {
+    if (this._lost) throw new Error('GPU unavailable');
+    const encoder = this.device.createCommandEncoder({ label: 'snapshot' });
+    const texel = this.encodeSource(encoder, frame);
+    const [w, h] = this.outputSize(frame);
+
+    const canvas = new OffscreenCanvas(w, h);
+    const ctx = canvas.getContext('webgpu')!;
+    ctx.configure({ device: this.device, format: this.format, alphaMode: 'opaque' });
+    const uniforms = this.device.createBuffer({ size: UNIFORM_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.writeUniforms(uniforms, [1, 1], DEFAULT_VIEW, texel, false);
+    this.encodePresent(encoder, ctx.getCurrentTexture(), uniforms, frame);
+    this.device.queue.submit([encoder.finish()]);
+    // Must be taken in the same task as the submit (before the canvas texture expires).
+    const blob = canvas.convertToBlob({ type: 'image/png' });
+    uniforms.destroy();
+    return blob;
   }
 
   /**
@@ -179,16 +173,61 @@ export class WebGpuRenderer {
     this.device.destroy();
   }
 
-  private updateLetterbox(aspect: number): void {
-    const cw = this.canvas.width;
-    const ch = this.canvas.height;
-    if (aspect === this.lastAspect && cw === this.lastCanvasW && ch === this.lastCanvasH) return;
-    this.lastAspect = aspect;
-    this.lastCanvasW = cw;
-    this.lastCanvasH = ch;
-    const canvasAspect = cw / ch;
-    this.uniformData[0] = aspect > canvasAspect ? 1 : aspect / canvasAspect;
-    this.uniformData[1] = aspect > canvasAspect ? canvasAspect / aspect : 1;
-    this.device.queue.writeBuffer(this.uniforms, 0, this.uniformData);
+  // -----------------------------------------------------------------------
+
+  /** Run the enhancement graph if active; returns the texel size the present pass samples. */
+  private encodeSource(encoder: GPUCommandEncoder, frame: VideoFrame): [number, number] {
+    this.pendingExternal = this.device.importExternalTexture({ source: frame });
+    if (this.mode === 'enhanced' && this.enhance) {
+      const { width, height } = frame.visibleRect ?? { width: frame.codedWidth, height: frame.codedHeight };
+      this.enhance.encode(encoder, this.pendingExternal, width, height);
+      const out = this.enhance.output!;
+      return [1 / out.width, 1 / out.height];
+    }
+    return [1 / frame.displayWidth, 1 / frame.displayHeight];
+  }
+
+  // External textures are only valid until the current task ends, so they
+  // are imported fresh for every draw and consumed right away.
+  private pendingExternal: GPUExternalTexture | null = null;
+
+  private encodePresent(encoder: GPUCommandEncoder, target: GPUTexture, uniforms: GPUBuffer, frame: VideoFrame): void {
+    const enhanced = this.mode === 'enhanced' && this.enhance?.output;
+    const pipeline = enhanced ? this.texturePipeline : this.directPipeline;
+    const source: GPUBindGroupEntry = enhanced
+      ? { binding: 3, resource: this.enhance!.output!.createView() }
+      : { binding: 2, resource: this.pendingExternal ?? this.device.importExternalTexture({ source: frame }) };
+    const bindGroup = this.device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [{ binding: 0, resource: { buffer: uniforms } }, { binding: 1, resource: this.sampler }, source],
+    });
+    this.pendingExternal = null;
+
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{ view: target.createView(), clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
+    });
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.draw(4);
+    pass.end();
+  }
+
+  /** NDC half-extents that aspect-fit the frame into a w×h target. */
+  private letterbox(frame: VideoFrame, w: number, h: number): [number, number] {
+    const aspect = frame.displayWidth / frame.displayHeight;
+    const canvasAspect = w / h;
+    return aspect > canvasAspect ? [1, canvasAspect / aspect] : [aspect / canvasAspect, 1];
+  }
+
+  private writeUniforms(buffer: GPUBuffer, scale: [number, number], view: ViewSettings, texel: [number, number], cache: boolean): void {
+    const p = this.picture;
+    const d = this.uniformData;
+    d.set([scale[0], scale[1], view.panX, view.panY, texel[0], texel[1], view.zoom, p.brightness, p.contrast, p.saturation, p.sharpness, 0]);
+    if (cache) {
+      const key = d.join(',');
+      if (key === this.uniformsKey) return;
+      this.uniformsKey = key;
+    }
+    this.device.queue.writeBuffer(buffer, 0, d);
   }
 }
