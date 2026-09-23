@@ -27,6 +27,7 @@ read cursor is the master clock.
 | Decode | Hardware decoding first (`prefer-hardware`), software fallback. Decoded frames are capped at 8, since each VideoFrame pins a decoder surface. Frames are closed the moment they become unusable. |
 | Render | Zero-copy `importExternalTexture`, which does YUV→RGB in the sampler. It uses one quad and one bind group per frame. The canvas is sized in device pixels via `devicePixelContentBoxSize`, so the compositor never rescales it. |
 | A/V sync | Audio drives the clock: `mediaTime = anchor + (readCursor − anchorCursor) / sampleRate − outputLatency`. When the network stalls, the worklet starves, the clock stops and video waits. Bluetooth latency is compensated. |
+| Timing | Edit lists are applied, so B-frame delay, AAC priming and Opus pre-skip are removed, priming samples are dropped, and tracks line up exactly. |
 | Startup | Progressive parsing shows the first frame before the download finishes. `moov`-at-end files jump straight to the index with HTTP Range requests. |
 | Seeking | The in-flight request is aborted and reopened at the keyframe offset. Pre-roll frames are decoded but hidden, so the landing is frame-accurate. The last frame stays on screen (no black flash), and scrubbing is coalesced to one seek per display frame. |
 | Resilience | Hidden tabs keep audio fed from a timer when rAF stops. Lost GPU devices are rebuilt with backoff and a retry budget. Undecodable audio falls back to a muted wall clock. When audio ends before video, a wall-clock tail finishes the video. |
@@ -38,10 +39,14 @@ npm install
 npm run dev        # http://localhost:5173
 npm run build && npm run preview
 npm run sample     # regenerate public/samples (needs ffmpeg)
+
+npm test           # unit tests (ring buffer, clocks, demuxer on real MP4s)
+npm run test:e2e   # Playwright: load, play, A/V sync, seek, end (build + preview)
 ```
 
-Requires Chrome/Edge 113+ (WebGPU + WebCodecs + OffscreenCanvas + AudioWorklet).
-If something is missing, the app shows a capability report instead of the player.
+The full engine needs Chrome/Edge 113+ (WebGPU + WebCodecs + OffscreenCanvas +
+AudioWorklet). Other browsers get **compatibility mode**, which plays through a
+plain `<video>` element and lists what's missing.
 
 ### Deployment: cross-origin isolation is required
 
@@ -106,7 +111,6 @@ Reference ports: [SegaraRai/anime4k-wgpu](https://github.com/SegaraRai/anime4k-w
 ## Roadmap
 
 - Playback rate (needs a WSOLA/phase-vocoder time-stretch in the worklet)
-- MP4 edit lists / B-frame composition offset normalisation
 - Fragmented MP4 over HLS/DASH (a new `Demuxer`; the rest of the pipeline is unchanged)
 - Rust/WASM demuxer for MKV/WebM behind the same `Demuxer` interface
 - HDR (PQ/HLG) with `display-p3` / `rgba16float` canvas and tone mapping

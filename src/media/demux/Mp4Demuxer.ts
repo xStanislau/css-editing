@@ -31,6 +31,8 @@ export class Mp4Demuxer implements Demuxer {
   private abort: AbortController | null = null;
   private videoTrack: Track | null = null;
   private audioTrack: Track | null = null;
+  /** Per-track presentation offset in seconds, from the edit list (elst). */
+  private readonly trackOffset = new Map<number, number>();
   private opened: { resolve: (t: DemuxedTracks) => void; reject: (e: Error) => void } | null = null;
   private _demuxedUntil = 0;
   private closed = false;
@@ -71,7 +73,10 @@ export class Mp4Demuxer implements Demuxer {
   }
 
   seek(time: number): number {
-    const { offset, time: actual } = this.file.seek(time, true);
+    // mp4box seeks in media time; edit offsets are a few ms, and the engine
+    // discards pre-roll by presentation time, so landing stays frame-accurate.
+    const { offset, time: mediaTime } = this.file.seek(time, true);
+    const actual = mediaTime + this.minOffset();
     this._demuxedUntil = actual;
     if (this.source.size !== undefined && offset >= this.source.size) {
       // Everything needed is already buffered inside mp4box.
@@ -158,6 +163,9 @@ export class Mp4Demuxer implements Demuxer {
     };
 
     for (const t of [this.videoTrack, this.audioTrack]) {
+      if (t) this.trackOffset.set(t.id, editListOffset(t, info.timescale));
+    }
+    for (const t of [this.videoTrack, this.audioTrack]) {
       if (t) this.file.setExtractionOptions(t.id, null, { nbSamples: EXTRACT_BATCH });
     }
     // Extraction starts in start(), once the decoders are configured, so no
@@ -168,22 +176,27 @@ export class Mp4Demuxer implements Demuxer {
 
   private handleSamples(trackId: number, samples: Sample[]): void {
     const isVideo = trackId === this.videoTrack?.id;
+    const shift = this.trackOffset.get(trackId) ?? 0;
     for (const s of samples) {
       if (!s.data) continue;
       const init = {
         type: s.is_sync ? 'key' : 'delta',
-        timestamp: (s.cts * 1e6) / s.timescale,
+        timestamp: (s.cts / s.timescale + shift) * 1e6,
         duration: (s.duration * 1e6) / s.timescale,
         data: s.data,
       } as const;
       if (isVideo) this.sink.onVideoChunk(new EncodedVideoChunk(init));
       else this.sink.onAudioChunk(new EncodedAudioChunk(init));
-      const end = (s.cts + s.duration) / s.timescale;
+      const end = (s.cts + s.duration) / s.timescale + shift;
       if (end > this._demuxedUntil) this._demuxedUntil = end;
     }
     // Let mp4box free the sample payloads we just handed to WebCodecs.
     const last = samples[samples.length - 1];
     if (last) this.file.releaseUsedSamples(trackId, last.number + 1);
+  }
+
+  private minOffset(): number {
+    return this.trackOffset.size ? Math.min(...this.trackOffset.values()) : 0;
   }
 
   private finish(): void {
@@ -210,7 +223,7 @@ export class Mp4Demuxer implements Demuxer {
     const entry = this.sampleEntry<VisualSampleEntry>(track);
     const seconds = track.samples_duration / track.timescale || track.duration / track.timescale;
     return {
-      codec: track.codec.startsWith('vp08') ? 'vp8' : track.codec,
+      codec: webCodecsCodec(track.codec),
       codedWidth: track.video?.width ?? track.track_width,
       codedHeight: track.video?.height ?? track.track_height,
       description: videoDescription(entry),
@@ -222,7 +235,7 @@ export class Mp4Demuxer implements Demuxer {
   private audioConfig(track: Track): AudioDecoderConfig {
     const entry = this.sampleEntry<AudioSampleEntry>(track);
     return {
-      codec: track.codec,
+      codec: webCodecsCodec(track.codec),
       sampleRate: track.audio?.sample_rate ?? 48000,
       numberOfChannels: track.audio?.channel_count ?? 2,
       description: audioDescription(entry),
@@ -245,4 +258,37 @@ function videoDescription(entry: VisualSampleEntry): Uint8Array | undefined {
 function audioDescription(entry: AudioSampleEntry): Uint8Array | undefined {
   const esds = (entry as AudioSampleEntry & { esds?: { esd: { findDescriptor(tag: number): { findDescriptor(tag: number): { data: Uint8Array } | undefined } | undefined } } }).esds;
   return esds?.esd.findDescriptor(0x04)?.findDescriptor(0x05)?.data;
+}
+
+/**
+ * mp4box reports sample-entry names; WebCodecs wants registry codec strings
+ * (case-sensitive): `Opus` -> `opus`, `fLaC` -> `flac`, `vp08.*` -> `vp8`,
+ * MPEG-1/2 audio object types -> `mp3`.
+ */
+export function webCodecsCodec(codec: string): string {
+  if (codec === 'Opus') return 'opus';
+  if (codec === 'fLaC') return 'flac';
+  if (codec.startsWith('vp08')) return 'vp8';
+  if (/^mp4a\.(6b|69)$/i.test(codec)) return 'mp3';
+  return codec;
+}
+
+/**
+ * Presentation offset (seconds) implied by a track's edit list:
+ *   - leading empty edits (media_time = -1) delay the track;
+ *   - the first real edit's media_time trims the start (B-frame composition
+ *     delay on video, encoder priming on AAC, Opus pre-skip).
+ * Samples then land at `cts / timescale + offset`, so tracks line up exactly
+ * and priming samples get negative timestamps (dropped by the decoders).
+ */
+export function editListOffset(track: Pick<Track, 'edits' | 'timescale'>, movieTimescale: number): number {
+  let delay = 0;
+  for (const e of track.edits ?? []) {
+    if (e.media_time === -1) {
+      delay += e.segment_duration / movieTimescale;
+      continue;
+    }
+    return delay - e.media_time / track.timescale;
+  }
+  return delay;
 }

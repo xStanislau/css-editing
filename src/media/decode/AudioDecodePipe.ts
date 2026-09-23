@@ -38,7 +38,7 @@ export class AudioDecodePipe {
   private anchored = false;
   /** Media time (s) of the next sample to be written to the ring. */
   private writeTime = 0;
-  private discardBefore = -Infinity;
+  private discardBefore = 0;
   private endOfStream = false;
   private flushing = false;
   /** Decoder flushed after end-of-stream: no more AudioData will be produced. */

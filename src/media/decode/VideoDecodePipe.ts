@@ -24,7 +24,7 @@ export class VideoDecodePipe {
   private config: VideoDecoderConfig | null = null;
   private needKeyframe = true;
   /** Frames with timestamp (µs) below this are decoded but discarded (accurate seek). */
-  private discardBeforeUs = -Infinity;
+  private discardBeforeUs = 0;
   private flushing = false;
   private endOfStream = false;
   /** Set once flush() after end-of-stream resolved: no more frames will come. */

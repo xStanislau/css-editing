@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { VideoPlayer, type VideoPlayerHandle } from './ui/VideoPlayer';
 import { SourceBar } from './ui/SourceBar';
 import { detectCapabilities } from './ui/capabilities';
+import { CompatPlayer } from './ui/CompatPlayer';
 import type { MediaSourceInput } from './shared/protocol';
 
 const SHORTCUTS = [
@@ -35,20 +36,7 @@ export function App() {
       </header>
 
       {missing.length > 0 ? (
-        <section className="rounded-2xl bg-red-950/40 p-6 ring-1 ring-red-500/30">
-          <h2 className="mb-3 font-semibold text-red-200">This browser can't run the pipeline yet</h2>
-          <ul className="space-y-2 text-sm">
-            {caps.map((c) => (
-              <li key={c.name} className="flex gap-3">
-                <span className={c.ok ? 'text-emerald-400' : 'text-red-400'}>{c.ok ? '✓' : '✕'}</span>
-                <span>
-                  <span className="font-medium">{c.name}</span>
-                  {!c.ok && <span className="block text-white/60">{c.hint}</span>}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </section>
+        <CompatPlayer missing={missing} />
       ) : (
         <>
           <VideoPlayer onReady={onReady} />

@@ -12,8 +12,8 @@
  *
  * Cursors are monotonic frame counters stored as Int32 and compared with
  * wrap-around-safe unsigned arithmetic (`(a - b) >>> 0`), so they never need
- * resetting. At 48 kHz an Int32 cursor wraps after ~24.8h, which the
- * arithmetic already handles.
+ * resetting. Capacity is a power of two, so `cursor % capacity` stays
+ * continuous across the 2^32 wrap (~24.8h at 48 kHz).
  *
  * This file is imported by three different global scopes (window, worker,
  * worklet), so it must stay free of any environment-specific globals.
@@ -41,10 +41,6 @@ const enum Ctl {
 
 const CTL_BYTES = Ctl.SLOTS * Int32Array.BYTES_PER_ELEMENT;
 
-export interface AudioRingInit {
-  sab: SharedArrayBuffer;
-}
-
 export class AudioRing {
   readonly sab: SharedArrayBuffer;
   readonly channels: number;
@@ -53,12 +49,15 @@ export class AudioRing {
   private readonly ctl: Int32Array;
   /** Interleaved samples, `capacity * channels` long. */
   private readonly data: Float32Array;
-  /** Consumer-local: last FlushSeq observed. */
+  /**
+   * Consumer-local: last FlushSeq applied. Starts at 0 (not the current value)
+   * so a flush issued before the worklet existed is still honoured.
+   */
   private seenFlushSeq = 0;
 
   static create(sampleRate: number, channels: number, seconds = 2): AudioRing {
-    // Round capacity to a multiple of the 128-frame render quantum.
-    const capacity = Math.ceil((sampleRate * seconds) / 128) * 128;
+    // Power of two: a multiple of the 128-frame render quantum and wrap-safe.
+    const capacity = 2 ** Math.ceil(Math.log2(Math.max(128, sampleRate * seconds)));
     const sab = new SharedArrayBuffer(CTL_BYTES + capacity * channels * Float32Array.BYTES_PER_ELEMENT);
     const ctl = new Int32Array(sab, 0, Ctl.SLOTS);
     ctl[Ctl.Channels] = channels;
@@ -74,7 +73,6 @@ export class AudioRing {
     this.capacity = this.ctl[Ctl.CapacityFrames];
     this.sampleRate = this.ctl[Ctl.SampleRate];
     this.data = new Float32Array(sab, CTL_BYTES, this.capacity * this.channels);
-    this.seenFlushSeq = Atomics.load(this.ctl, Ctl.FlushSeq);
   }
 
   // ---------------------------------------------------------------- shared
