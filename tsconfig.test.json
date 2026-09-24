@@ -2,8 +2,25 @@
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo",
-    "lib": ["ES2023", "DOM", "DOM.Iterable"],
-    "types": ["node", "@webgpu/types"]
+    "lib": [
+      "ES2023",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "types": [
+      "node",
+      "@webgpu/types"
+    ]
   },
-  "include": ["tests", "vitest.config.ts", "playwright.config.ts", "playwright.perf.config.ts"]
+  "include": [
+    "tests",
+    "vitest.config.ts",
+    "playwright.config.ts",
+    "playwright.perf.config.ts",
+    "playwright.gpu.config.ts"
+  ],
+  "exclude": [
+    "tests/gpu/anime4k.ts",
+    "tests/gpu/reference.ts"
+  ]
 }

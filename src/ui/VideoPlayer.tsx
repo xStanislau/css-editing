@@ -7,6 +7,7 @@ import { TimeDisplay } from './TimeDisplay';
 import { StatsOverlay } from './StatsOverlay';
 import { PictureMenu } from './PictureMenu';
 import { SubtitlesMenu } from './SubtitlesMenu';
+import { EnhanceMenu } from './EnhanceMenu';
 import { isSubtitleFile } from '../shared/subtitles';
 import {
   CameraIcon,
@@ -51,6 +52,7 @@ export function VideoPlayer({ onReady }: { onReady?: (player: VideoPlayerHandle)
   const [dragOver, setDragOver] = useState(false);
   const [showPicture, setShowPicture] = useState(false);
   const [showSubs, setShowSubs] = useState(false);
+  const [showEnhance, setShowEnhance] = useState(false);
   const panDrag = useRef<{ x: number; y: number; moved: boolean } | null>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -122,6 +124,12 @@ export function VideoPlayer({ onReady }: { onReady?: (player: VideoPlayerHandle)
   useEffect(() => {
     if (!player) return;
     const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && (showPicture || showSubs || showEnhance)) {
+        setShowPicture(false);
+        setShowSubs(false);
+        setShowEnhance(false);
+        return;
+      }
       const target = e.target as HTMLElement;
       if (target.closest('input, textarea, [contenteditable]') || e.metaKey || e.ctrlKey || e.altKey) return;
       const handled = handleKey(player, e.key, {
@@ -136,7 +144,7 @@ export function VideoPlayer({ onReady }: { onReady?: (player: VideoPlayerHandle)
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [player, toggleFullscreen, poke, snap.renderMode]);
+  }, [player, toggleFullscreen, poke, snap.renderMode, showPicture, showSubs, showEnhance]);
 
   // ------------------------------------------------ drag & drop
   const onDrop = (e: DragEvent) => {
@@ -183,7 +191,7 @@ export function VideoPlayer({ onReady }: { onReady?: (player: VideoPlayerHandle)
         onPointerUp={() => {
           const d = panDrag.current;
           panDrag.current = null;
-          if (showPicture || showSubs) return setShowPicture(false), setShowSubs(false);
+          if (showPicture || showSubs || showEnhance) return setShowPicture(false), setShowSubs(false), setShowEnhance(false);
           if (!d?.moved && hasMedia) player?.togglePlay();
         }}
         onDoubleClick={toggleFullscreen}
@@ -250,6 +258,7 @@ export function VideoPlayer({ onReady }: { onReady?: (player: VideoPlayerHandle)
 
       {showPicture && player && hasMedia && <PictureMenu player={player} snap={snap} onClose={() => setShowPicture(false)} />}
       {showSubs && player && hasMedia && <SubtitlesMenu player={player} snap={snap} onClose={() => setShowSubs(false)} />}
+      {showEnhance && player && hasMedia && <EnhanceMenu player={player} snap={snap} />}
 
       {player && hasMedia && (
         <Controls
@@ -259,7 +268,10 @@ export function VideoPlayer({ onReady }: { onReady?: (player: VideoPlayerHandle)
           ended={snap.state === 'ended'}
           volume={snap.volume}
           muted={snap.muted}
-          enhanced={snap.renderMode === 'enhanced'}
+          enhanced={snap.renderMode !== 'direct'}
+          enhanceLabel={snap.renderMode === 'direct' ? 'ANIME4K' : snap.renderMode.toUpperCase()}
+          showEnhance={showEnhance}
+          onToggleEnhance={() => (setShowEnhance((v) => !v), setShowSubs(false), setShowPicture(false))}
           showStats={showStats}
           fullscreen={fullscreen}
           onToggleStats={() => setShowStats((s) => !s)}
@@ -269,10 +281,10 @@ export function VideoPlayer({ onReady }: { onReady?: (player: VideoPlayerHandle)
           duration={snap.info?.duration ?? 0}
           aspect={aspect}
           showPicture={showPicture}
-          onTogglePicture={() => (setShowPicture((v) => !v), setShowSubs(false))}
+          onTogglePicture={() => (setShowPicture((v) => !v), setShowSubs(false), setShowEnhance(false))}
           subtitlesOn={snap.subtitles.active !== null}
           showSubs={showSubs}
-          onToggleSubs={() => (setShowSubs((v) => !v), setShowPicture(false))}
+          onToggleSubs={() => (setShowSubs((v) => !v), setShowPicture(false), setShowEnhance(false))}
         />
       )}
     </div>
@@ -287,6 +299,9 @@ interface ControlsProps {
   volume: number;
   muted: boolean;
   enhanced: boolean;
+  enhanceLabel: string;
+  showEnhance: boolean;
+  onToggleEnhance(): void;
   showStats: boolean;
   fullscreen: boolean;
   title: string | null;
@@ -338,12 +353,14 @@ function Controls(p: ControlsProps) {
         <span className="flex-1 sm:hidden" />
 
         <button
-          onClick={() => p.player.setRenderMode(p.enhanced ? 'direct' : 'enhanced')}
-          title="WebGPU enhancement (e)"
+          onClick={p.onToggleEnhance}
+          aria-label="Anime4K (e)"
+          aria-expanded={p.showEnhance}
+          title="Anime4K enhancement (e toggles)"
           className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold tracking-wide transition ${p.enhanced ? 'bg-accent text-white shadow-lg shadow-accent/40' : 'bg-white/10 text-white/80 hover:bg-white/20'}`}
         >
           <SparklesIcon className="size-4" />
-          {p.enhanced ? 'ENHANCED' : 'ENHANCE'}
+          {p.enhanceLabel}
         </button>
         <IconButton
           label={!p.loop ? 'Set loop start (b)' : p.loop.b === null ? 'Set loop end (b)' : 'Clear loop (b)'}
@@ -455,7 +472,7 @@ function handleKey(
       ctx.toggleStats();
       return true;
     case 'e':
-      player.setRenderMode(ctx.renderMode === 'enhanced' ? 'direct' : 'enhanced');
+      player.toggleEnhance();
       return true;
     case 'Home':
       player.seek(0);

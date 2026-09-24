@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.gpu.tsbuildinfo",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["vite/client", "@webgpu/types"]
+  },
+  "include": ["tests/gpu/anime4k.ts", "tests/gpu/reference.ts", "src/vite-env.d.ts"]
+}

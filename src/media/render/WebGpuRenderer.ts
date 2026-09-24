@@ -1,7 +1,18 @@
 import presentWgsl from './shaders/present.wgsl?raw';
 import { EnhanceGraph } from './enhance/EnhanceGraph';
-import { ENHANCE_PASSES } from './enhance/passes';
-import { DEFAULT_PICTURE, DEFAULT_VIEW, type PictureSettings, type RenderMode, type ViewSettings } from '../../shared/protocol';
+import { loadChain } from './enhance/presets';
+import {
+  DEFAULT_PICTURE,
+  DEFAULT_VIEW,
+  type EnhanceStatus,
+  type PictureSettings,
+  type RenderMode,
+  type ViewSettings,
+} from '../../shared/protocol';
+
+/** Anime4K's rule: only upscale when the picture is shown ≥ 1.2× its source size. */
+const UPSCALE_THRESHOLD = 1.2;
+
 
 /** Uniform block size in bytes (see `struct Uniforms` in present.wgsl). */
 const UNIFORM_BYTES = 48;
@@ -24,8 +35,13 @@ export class WebGpuRenderer {
   private readonly uniforms: GPUBuffer;
   private readonly uniformData = new Float32Array(UNIFORM_BYTES / 4);
   private readonly sampler: GPUSampler;
+  /** Graph currently used for drawing, and the key (preset:upscale) it was built for. */
   private enhance: EnhanceGraph | null = null;
+  private enhanceKey: string | null = null;
+  private building: string | null = null;
   private mode: RenderMode = 'direct';
+  /** Called when a newly built chain becomes active (to repaint while paused). */
+  onEnhanceChange: ((status: EnhanceStatus) => void) | null = null;
   private picture: PictureSettings = DEFAULT_PICTURE;
   private view: ViewSettings = DEFAULT_VIEW;
   private uniformsKey = '';
@@ -91,11 +107,51 @@ export class WebGpuRenderer {
 
   setMode(mode: RenderMode): void {
     this.mode = mode;
-    if (mode === 'enhanced' && !this.enhance) this.enhance = new EnhanceGraph(this.device, ENHANCE_PASSES);
-    if (mode === 'direct' && this.enhance) {
-      this.enhance.destroy();
-      this.enhance = null;
-    }
+    if (mode === 'direct') this.dropEnhance();
+  }
+
+  get enhanceStatus(): EnhanceStatus {
+    return {
+      mode: this.mode,
+      active: this.enhanceKey,
+      passes: this.enhance?.passCount ?? 0,
+      upscaling: this.enhanceKey?.endsWith(':up') ?? false,
+    };
+  }
+
+  /**
+   * Make sure the graph for the current mode and display size is (being)
+   * built. Drawing continues with the previous graph (or zero-copy) until
+   * the new one has compiled.
+   */
+  private syncEnhance(frame: VideoFrame, boxHeight: number): void {
+    if (this.mode === 'direct') return;
+    const upscale = boxHeight >= frame.displayHeight * UPSCALE_THRESHOLD;
+    const key = `${this.mode}:${upscale ? 'up' : 'native'}`;
+    if (key === this.enhanceKey || key === this.building) return;
+    this.building = key;
+    const mode = this.mode;
+    void loadChain(mode, upscale)
+      .then(async (passes) => {
+        const graph = passes.length ? await EnhanceGraph.create(this.device, passes) : null;
+        if (this.building !== key || this._lost) return graph?.destroy();
+        this.enhance?.destroy();
+        this.enhance = graph;
+        this.enhanceKey = key;
+        this.building = null;
+        this.onEnhanceChange?.(this.enhanceStatus);
+      })
+      .catch((e) => {
+        console.error('[anime4k] failed to build chain', e);
+        if (this.building === key) this.building = null;
+      });
+  }
+
+  private dropEnhance(): void {
+    this.building = null;
+    this.enhance?.destroy();
+    this.enhance = null;
+    this.enhanceKey = null;
   }
 
   setPicture(picture: PictureSettings): void {
@@ -117,16 +173,18 @@ export class WebGpuRenderer {
 
   /** Size of the image actually produced by the last draw (after enhancement). */
   outputSize(frame: VideoFrame): [number, number] {
-    const out = this.mode === 'enhanced' ? this.enhance?.output : null;
+    const out = this.mode !== 'direct' ? this.enhance?.output : null;
     return out ? [out.width, out.height] : [frame.displayWidth, frame.displayHeight];
   }
 
   /** Present one frame (false if skipped). The frame stays owned by the caller. */
   draw(frame: VideoFrame): boolean {
     if (this._lost) return false;
+    const box = this.letterbox(frame, this.canvas.width, this.canvas.height);
+    this.syncEnhance(frame, box[1] * this.canvas.height * this.view.zoom);
     const encoder = this.device.createCommandEncoder({ label: 'frame' });
     const texel = this.encodeSource(encoder, frame);
-    this.writeUniforms(this.uniforms, this.letterbox(frame, this.canvas.width, this.canvas.height), this.view, texel, true);
+    this.writeUniforms(this.uniforms, box, this.view, texel, true);
     this.encodePresent(encoder, this.ctx.getCurrentTexture(), this.uniforms, frame);
     this.device.queue.submit([encoder.finish()]);
     return true;
@@ -168,7 +226,7 @@ export class WebGpuRenderer {
   }
 
   destroy(): void {
-    this.enhance?.destroy();
+    this.dropEnhance();
     this.uniforms.destroy();
     this.device.destroy();
   }
@@ -178,7 +236,7 @@ export class WebGpuRenderer {
   /** Run the enhancement graph if active; returns the texel size the present pass samples. */
   private encodeSource(encoder: GPUCommandEncoder, frame: VideoFrame): [number, number] {
     this.pendingExternal = this.device.importExternalTexture({ source: frame });
-    if (this.mode === 'enhanced' && this.enhance) {
+    if (this.mode !== 'direct' && this.enhance) {
       const { width, height } = frame.visibleRect ?? { width: frame.codedWidth, height: frame.codedHeight };
       this.enhance.encode(encoder, this.pendingExternal, width, height);
       const out = this.enhance.output!;
@@ -192,7 +250,7 @@ export class WebGpuRenderer {
   private pendingExternal: GPUExternalTexture | null = null;
 
   private encodePresent(encoder: GPUCommandEncoder, target: GPUTexture, uniforms: GPUBuffer, frame: VideoFrame): void {
-    const enhanced = this.mode === 'enhanced' && this.enhance?.output;
+    const enhanced = this.mode !== 'direct' && this.enhance?.output;
     const pipeline = enhanced ? this.texturePipeline : this.directPipeline;
     const source: GPUBindGroupEntry = enhanced
       ? { binding: 3, resource: this.enhance!.output!.createView() }

@@ -9,6 +9,8 @@ import {
   type MediaSourceInput,
   type PictureSettings,
   type PlaybackState,
+  type EnhancePreset,
+  type EnhanceStatus,
   type RenderMode,
   type SubtitleTrack,
   type ToWorker,
@@ -31,6 +33,8 @@ export interface PlayerSnapshot {
   view: ViewSettings;
   /** A-B loop; `b` is null while only A is set. */
   loop: { a: number; b: number | null } | null;
+  /** What the GPU is actually running for Anime4K (null until the renderer reports). */
+  enhance: EnhanceStatus | null;
   /** Selectable subtitles: embedded tracks plus an optional external file. */
   subtitles: { tracks: SubtitleTrack[]; external: string | null; active: ActiveSubtitle };
 }
@@ -97,6 +101,7 @@ export class PlayerController {
     view: DEFAULT_VIEW,
     loop: null,
     subtitles: { tracks: [], external: null, active: null },
+    enhance: null,
   };
   private readonly listeners = new Set<() => void>();
   private readonly frameListeners = new Set<FrameListener>();
@@ -253,8 +258,16 @@ export class PlayerController {
     this.applyGain();
   }
 
+  private lastPreset: EnhancePreset = 'balanced';
+
   setRenderMode(mode: RenderMode): void {
+    if (mode !== 'direct') this.lastPreset = mode;
     this.send({ type: 'set-render-mode', mode });
+  }
+
+  /** E key: Anime4K off <-> the last preset used (Balanced by default). */
+  toggleEnhance(): void {
+    this.setRenderMode(this.snapshot.renderMode === 'direct' ? this.lastPreset : 'direct');
   }
 
   dismissError(): void {
@@ -471,6 +484,9 @@ export class PlayerController {
         break;
       case 'render-mode':
         this.update({ renderMode: msg.mode });
+        break;
+      case 'enhance-status':
+        this.update({ enhance: msg.status });
         break;
       case 'error':
         this.setError(msg.message, msg.fatal);

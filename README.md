@@ -47,6 +47,7 @@ npm run sample     # regenerate public/samples (needs ffmpeg)
 npm test           # unit tests (ring buffer, clocks, demuxer on real MP4s)
 npm run test:e2e   # Playwright: load, play, A/V sync, seek, end (build + preview)
 npm run test:perf  # performance & responsiveness report -> test-results/perf-report.json
+npm run test:gpu   # Anime4K quality (PSNR) + GPU vs CPU reference
 ```
 
 The full engine needs Chrome/Edge 113+ (WebGPU + WebCodecs + OffscreenCanvas +
@@ -123,30 +124,37 @@ QoE is also exported at runtime as `performance.measure()` entries
 | Zoom | Ctrl/⌘ + scroll or a trackpad pinch zooms around the cursor. Drag to pan, `+`/`−` to step, `Z` to reset. |
 | Auto quality | If the enhancement graph drops over 20% of frames for 3s, the player falls back to the zero-copy path and says why. |
 
-## Injecting Anime4K
+## Anime4K
 
-Press **E** (or click **Enhance**) to switch to the compute path:
+The real [Anime4K](https://github.com/bloc97/Anime4K) CNNs (MIT) run as WebGPU
+compute passes. The original mpv GLSL is vendored in `third_party/anime4k/` and
+`npm run anime4k` transpiles it to WGSL (`src/media/render/enhance/anime4k/`,
+one lazily loaded chunk per network), keeping every trained weight verbatim.
 
-```
-VideoFrame ─ingest─▶ SOURCE (rgba16f) ─pass 1─▶ … ─pass N─▶ OUTPUT ─present─▶ canvas
-```
+| Preset | Chain | PSNR on 2× line art (bilinear 22.1 dB) |
+| --- | --- | --- |
+| Fast | Upscale CNN S (5 passes) | 27.6 dB |
+| Balanced | Upscale CNN M (9) | 28.7 dB |
+| Quality | Upscale CNN VL (18) | **30.1 dB** |
+| Restore | Restore M + Upscale M (17), for blurry/old sources | 25.2 dB* |
+| Denoise | Upscale+Denoise M (9), for noisy sources | 28.5 dB |
 
-1. Put each Anime4K pass in `src/media/render/shaders/` as a compute shader.
-   `anime4k.placeholder.wgsl` is the marked injection point; it currently does
-   a 2× bilinear upscale plus a light adaptive sharpen.
-2. List the passes in `src/media/render/enhance/passes.ts`. For each pass, give
-   the named input textures, the output texture and the scale relative to the
-   source. Intermediate feature maps are allocated automatically.
-3. Follow the binding convention: `@binding(0)` sampler (optional),
-   `@binding(1..N)` inputs, `@binding(N+1)` rgba16float storage output,
-   `@workgroup_size(8, 8)`.
+\*Restore redraws lines, which is great on degraded sources but penalised by
+PSNR on the clean test image, so it is its own preset rather than part of Quality.
 
-Reference ports: [SegaraRai/anime4k-wgpu](https://github.com/SegaraRai/anime4k-wgpu).
+- As in Anime4K itself, the 2× upscale only runs when the picture is displayed
+  at ≥ 1.2× its source size. Otherwise only restore passes run, or none.
+- Chains compile with `createComputePipelineAsync` in the background. Playback
+  continues on the previous chain and switches when the new one is ready.
+- Auto-degrade steps down Quality → Balanced → Fast → off if frames drop.
+- `npm run test:gpu` scores every preset against ground truth. It also checks
+  the WGSL against an independent float32 CPU evaluation of the original GLSL
+  (max error ≈ 1e-3, from fp16 feature maps).
 
 ## Keyboard
 
 `Space`/`K` play · `←`/`→` ±5s · `J`/`L` ±10s · `0–9` jump · `,`/`.` frame step · `B` loop ·
-`X` save frame · `C` subtitles · `+`/`−`/`Z` zoom · `↑`/`↓` volume · `M` mute · `E` enhance · `S` stats · `F` fullscreen
+`X` save frame · `C` subtitles · `E` Anime4K on/off · `+`/`−`/`Z` zoom · `↑`/`↓` volume · `M` mute · `E` enhance · `S` stats · `F` fullscreen
 
 ## Roadmap
 

@@ -5,6 +5,7 @@
     { "path": "./tsconfig.worker.json" },
     { "path": "./tsconfig.worklet.json" },
     { "path": "./tsconfig.node.json" },
-    { "path": "./tsconfig.test.json" }
+    { "path": "./tsconfig.test.json" },
+    { "path": "./tsconfig.gpu.json" }
   ]
 }

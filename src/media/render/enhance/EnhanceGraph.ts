@@ -22,34 +22,40 @@ interface CompiledPass {
  * ingest bind group (external textures expire every frame by spec).
  */
 export class EnhanceGraph {
-  private readonly ingest: GPUComputePipeline;
-  private readonly passes: CompiledPass[];
-  private readonly sampler: GPUSampler;
   private textures = new Map<string, GPUTexture>();
   private srcW = 0;
   private srcH = 0;
+  private readonly sampler: GPUSampler;
 
-  constructor(
-    private readonly device: GPUDevice,
-    passes: EnhancePass[],
-  ) {
-    this.ingest = device.createComputePipeline({
-      label: 'enhance-ingest',
-      layout: 'auto',
-      compute: { module: device.createShaderModule({ label: 'ingest', code: ingestWgsl }), entryPoint: 'main' },
-    });
-    this.passes = passes.map((pass) => ({
-      pass,
-      pipeline: device.createComputePipeline({
-        label: pass.label,
+  /**
+   * Compile every pipeline asynchronously (createComputePipelineAsync), so a
+   * 35-pass Anime4K chain never stalls the frame loop while it builds.
+   */
+  static async create(device: GPUDevice, passes: EnhancePass[]): Promise<EnhanceGraph> {
+    const compile = (label: string, code: string) =>
+      device.createComputePipelineAsync({
+        label,
         layout: 'auto',
-        compute: { module: device.createShaderModule({ label: pass.label, code: pass.code }), entryPoint: pass.entryPoint ?? 'main' },
-      }),
-      bindGroup: null,
-      width: 0,
-      height: 0,
-    }));
+        compute: { module: device.createShaderModule({ label, code }), entryPoint: 'main' },
+      });
+    const [ingest, ...pipelines] = await Promise.all([compile('enhance-ingest', ingestWgsl), ...passes.map((p) => compile(p.label, p.code))]);
+    return new EnhanceGraph(
+      device,
+      ingest,
+      passes.map((pass, i) => ({ pass, pipeline: pipelines[i], bindGroup: null, width: 0, height: 0 })),
+    );
+  }
+
+  private constructor(
+    private readonly device: GPUDevice,
+    private readonly ingest: GPUComputePipeline,
+    private readonly passes: CompiledPass[],
+  ) {
     this.sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+  }
+
+  get passCount(): number {
+    return this.passes.length;
   }
 
   /** Output texture of the last run (null until the first frame). */
@@ -103,7 +109,8 @@ export class EnhanceGraph {
         label: `enhance:${name}`,
         size: { width: w, height: h },
         format: FORMAT,
-        usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+        // COPY_SRC: snapshots and quality tests read the output back.
+        usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
       });
       this.textures.set(name, tex);
       return tex;

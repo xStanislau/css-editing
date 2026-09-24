@@ -64,3 +64,16 @@ test('seek bar hover shows a real decoded frame', async ({ page }) => {
   });
   expect(lit).toBeGreaterThan(40);
 });
+
+test('Anime4K: E enables the chain; low-res video is upscaled 2x on the GPU', async ({ page }) => {
+  await page.getByPlaceholder(/https:/).fill('http://localhost:4173/samples/sample-lineart-270p.mkv');
+  await page.getByRole('button', { name: 'Load URL' }).click();
+  await expect(page.getByRole('button', { name: 'Play', exact: true }).first()).toBeVisible({ timeout: 15_000 });
+  await page.keyboard.press('s');
+  await page.keyboard.press('e'); // default preset: Balanced (Upscale CNN M)
+  const stats = page.locator('pre');
+  await expect(stats).toContainText('Anime4K balanced · 2× upscale · 9 compute passes', { timeout: 20_000 });
+  await expect(stats).toContainText('480×270 → 960×540');
+  await page.keyboard.press('e'); // back to zero-copy
+  await expect(stats).toContainText('WebGPU zero-copy external texture');
+});

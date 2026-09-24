@@ -7,7 +7,7 @@ import { T } from '../shared/telemetry';
 export function StatsOverlay({ controller, snapshot }: { controller: PlayerController; snapshot: PlayerSnapshot }) {
   const ref = useRef<HTMLPreElement>(null);
   const lastUpdate = useRef(0);
-  const { info, gpu, renderMode } = snapshot;
+  const { info, gpu, renderMode, enhance } = snapshot;
 
   useFrame(
     controller,
@@ -18,7 +18,7 @@ export function StatsOverlay({ controller, snapshot }: { controller: PlayerContr
         lastUpdate.current = now;
         const rows: [string, string][] = [
           ['GPU', gpu ?? '…'],
-          ['Pipeline', renderMode === 'enhanced' ? 'WebGPU compute → enhance graph' : 'WebGPU zero-copy external texture'],
+          ['Pipeline', pipelineLine(snapshot)],
           ['Video', info?.video ? `${info.video.codec} · ${info.video.hardware ? 'HW' : 'SW'} decode · ${info.video.fps.toFixed(2)} fps` : '—'],
           ['Audio', info?.audio ? `${info.audio.codec} · ${info.audio.sampleRate} Hz · ${info.audio.channels} ch` : '—'],
           ['Resolution', `${t[T.VideoWidth]}×${t[T.VideoHeight]} → ${t[T.OutputWidth]}×${t[T.OutputHeight]}`],
@@ -32,7 +32,7 @@ export function StatsOverlay({ controller, snapshot }: { controller: PlayerContr
         ];
         ref.current.textContent = rows.map(([k, v]) => `${k.padEnd(11)} ${v}`).join('\n');
       },
-      [gpu, info, renderMode],
+      [gpu, info, renderMode, enhance, snapshot],
     ),
   );
 
@@ -49,4 +49,11 @@ function qoeLine(c: PlayerController): string {
   const ms = (v: number | null) => (v === null ? '—' : `${Math.round(v)} ms`);
   const avgSeek = q.seekCount ? q.seekTotalMs / q.seekCount : null;
   return `TTFF ${ms(q.ttffMs)} · seek ${ms(avgSeek)} avg (instant ${ms(q.lastSeekInstantMs)}) · rebuffers ${q.rebufferCount}`;
+}
+
+function pipelineLine(s: PlayerSnapshot): string {
+  if (s.renderMode === 'direct' || !s.enhance?.active) {
+    return s.renderMode === 'direct' ? 'WebGPU zero-copy external texture' : `Anime4K ${s.renderMode} (compiling…)`;
+  }
+  return `Anime4K ${s.enhance.active.replace(':up', ' · 2× upscale').replace(':native', ' · restore')} · ${s.enhance.passes} compute passes`;
 }

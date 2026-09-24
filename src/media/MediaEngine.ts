@@ -22,6 +22,7 @@ import { AudioMasterClock, WallClock, type MediaClock } from './sync/MediaClock'
 import { WebGpuRenderer } from './render/WebGpuRenderer';
 import { CadenceMonitor, SmoothClock, VsyncEstimator } from './sync/FramePacer';
 import { PreviewService } from './preview/PreviewService';
+import { CHEAPER } from './render/enhance/presets';
 
 /** Network/demux read-ahead window (seconds). Encoded media is cheap to hold. */
 const READ_AHEAD_HIGH = 30;
@@ -241,7 +242,10 @@ export class MediaEngine implements DemuxSink {
     this.renderMode = mode;
     this.renderer?.setMode(mode);
     this.needsRedraw = true;
+    // Give the new chain a fresh window before judging its frame drops.
+    this.degradeWindow = { start: performance.now(), presented: this.presented, dropped: this.dropped };
     this.post({ type: 'render-mode', mode });
+    if (this.renderer) this.post({ type: 'enhance-status', status: this.renderer.enhanceStatus });
   }
 
   setPicture(picture: PictureSettings): void {
@@ -508,13 +512,14 @@ export class MediaEngine implements DemuxSink {
   }
 
   /**
-   * If the enhancement graph can't keep up on this device, drop back to the
-   * zero-copy path instead of stuttering, and tell the user why.
+   * If the Anime4K chain can't keep up on this device, step down to the next
+   * cheaper preset (quality → balanced → fast → off) instead of stuttering,
+   * and tell the user why.
    */
   private checkAutoDegrade(): void {
     const now = performance.now();
     const w = this.degradeWindow;
-    if (this.renderMode !== 'enhanced' || this.state !== 'playing') {
+    if (this.renderMode === 'direct' || this.state !== 'playing') {
       this.degradeWindow = { start: now, presented: this.presented, dropped: this.dropped };
       return;
     }
@@ -523,8 +528,12 @@ export class MediaEngine implements DemuxSink {
     const dropped = this.dropped - w.dropped;
     this.degradeWindow = { start: now, presented: this.presented, dropped: this.dropped };
     if (presented + dropped > 10 && dropped / (presented + dropped) > AUTO_DEGRADE_DROP_RATIO) {
-      this.setRenderMode('direct');
-      this.post({ type: 'notice', message: 'Enhancement paused: this device dropped too many frames. Press E to try again.' });
+      const next = CHEAPER[this.renderMode] ?? 'direct';
+      this.setRenderMode(next);
+      this.post({
+        type: 'notice',
+        message: next === 'direct' ? 'Anime4K paused: this device dropped too many frames. Press E to retry.' : `Anime4K switched to ${next}: frames were dropping.`,
+      });
     }
   }
 
@@ -617,6 +626,10 @@ export class MediaEngine implements DemuxSink {
       const renderer = await WebGpuRenderer.create(this.canvas, (reason) => this.onDeviceLost(reason));
       if (this.disposed) return renderer.destroy();
       renderer.setMode(this.renderMode);
+      renderer.onEnhanceChange = (status) => {
+        this.needsRedraw = true;
+        this.post({ type: 'enhance-status', status });
+      };
       renderer.setPicture(this.picture);
       renderer.setView(this.view);
       const previous = this.renderer;

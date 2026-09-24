@@ -13,7 +13,25 @@ export type MediaSourceInput =
 
 export type PlaybackState = 'idle' | 'loading' | 'ready' | 'playing' | 'paused' | 'buffering' | 'ended' | 'error';
 
-export type RenderMode = 'direct' | 'enhanced';
+/** Anime4K presets, cheapest first. */
+export type EnhancePreset = 'fast' | 'balanced' | 'quality' | 'restore' | 'denoise';
+export type RenderMode = 'direct' | EnhancePreset;
+
+export interface EnhanceStatus {
+  mode: RenderMode;
+  /** Chain actually running, e.g. "balanced:up" (null = zero-copy). */
+  active: string | null;
+  passes: number;
+  upscaling: boolean;
+}
+
+export const ENHANCE_PRESETS: { id: EnhancePreset; label: string; detail: string }[] = [
+  { id: 'fast', label: 'Fast', detail: 'Upscale CNN S · laptops & iGPUs' },
+  { id: 'balanced', label: 'Balanced', detail: 'Upscale CNN M' },
+  { id: 'quality', label: 'Quality', detail: 'Upscale CNN VL · desktop GPUs' },
+  { id: 'restore', label: 'Restore', detail: 'Restore M + Upscale M · blurry / old sources' },
+  { id: 'denoise', label: 'Denoise', detail: 'Upscale + Denoise M · noisy sources' },
+];
 
 /** Colour controls applied in the present shader (WYSIWYG, also in snapshots). */
 export interface PictureSettings {
@@ -102,6 +120,8 @@ export type FromWorker =
   /** `cause` separates real stalls (rebuffering) from seek/start buffering. */
   | { type: 'state'; state: PlaybackState; cause?: 'seek' | 'start' | 'stall' }
   | { type: 'render-mode'; mode: RenderMode }
+  /** What the GPU is actually running (a new Anime4K chain may still be compiling). */
+  | { type: 'enhance-status'; status: EnhanceStatus }
   | { type: 'snapshot'; blob: Blob; time: number }
   /** Real decoded keyframe for the seek-bar tooltip (null if unavailable). */
   | { type: 'preview'; id: number; time: number; bitmap: ImageBitmap | null }
