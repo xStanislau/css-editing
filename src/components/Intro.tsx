@@ -1,26 +1,25 @@
 import type { CaseData } from '../engine/types';
+import { useUi } from '../i18n/ui';
 import { Placeholder } from './Placeholder';
 
 export function Intro({ caseData, onStart }: { caseData: CaseData; onStart: () => void }) {
+  const ui = useUi();
   return (
     <div className="intro">
-      <Placeholder label="Hotel Vesper at night in the storm, causeway under water" tall />
-      <p className="eyebrow">Case 01</p>
+      <Placeholder label={caseData.art.cover} tall />
+      <p className="eyebrow">{ui.caseLabel}</p>
       <h1>{caseData.title}</h1>
       <p className="tagline">{caseData.tagline}</p>
       {caseData.intro.map((p, i) => (
         <p key={i}>{p}</p>
       ))}
       <div className="question-card">
-        <h2>Your question</h2>
+        <h2>{ui.intro.yourQuestion}</h2>
         <p>{caseData.question}</p>
       </div>
-      <p className="muted">
-        About 5–10 minutes. No timer. Everything you need is in the evidence. Progress saves automatically in this
-        browser.
-      </p>
+      <p className="muted">{ui.intro.timeNote}</p>
       <button className="btn btn--primary" onClick={onStart} autoFocus>
-        Begin the investigation
+        {ui.intro.begin}
       </button>
     </div>
   );

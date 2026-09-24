@@ -6,6 +6,6 @@ import './styles.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App caseData={case01} />
+    <App cases={case01} />
   </StrictMode>,
 );

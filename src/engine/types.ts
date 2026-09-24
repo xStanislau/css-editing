@@ -68,4 +68,37 @@ export interface CaseData {
     /** Shown after submission regardless of correctness. */
     explanation: string[];
   };
+  /** Labels for case-level placeholder art (cover on the intro, reveal on the result). */
+  art: { cover: string; reveal: string };
+}
+
+// ---------------------------------------------------------------------------
+// Authoring shapes. A case is written as language-free rules plus one text
+// bundle per language, keyed by the rule ids; buildCase() merges them into
+// CaseData. Rules decide the game; text never does.
+
+export interface CaseRules {
+  id: string;
+  evidenceIds: string[];
+  suspects: { id: string; claimIds: string[] }[];
+  contradictions: { claimId: string; evidenceId: string }[];
+  hintCount: number;
+  deduction: { id: string; optionIds: string[]; correctOptionId: string }[];
+}
+
+export interface CaseText {
+  title: string;
+  tagline: string;
+  intro: string[];
+  question: string;
+  evidence: Record<string, Omit<Evidence, 'id'>>;
+  suspects: Record<string, Omit<Suspect, 'id' | 'claims'>>;
+  claims: Record<string, string>;
+  /** Keyed by contradictionKey(claimId, evidenceId). */
+  contradictions: Record<string, string>;
+  noContradictionText: string;
+  hints: string[];
+  deduction: Record<string, { prompt: string; options: Record<string, string> }>;
+  solution: CaseData['solution'];
+  art: CaseData['art'];
 }

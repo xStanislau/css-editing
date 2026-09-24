@@ -1,15 +1,17 @@
 import { useState } from 'react';
 import { contradictionKey, findContradiction } from '../engine/logic';
+import { useUi } from '../i18n/ui';
 import type { PanelProps } from './Board';
 import { Placeholder } from './Placeholder';
 
+// Stores the outcome, not text, so feedback re-renders in the new language after a switch.
 interface Feedback {
   claimId: string;
   found: boolean;
-  text: string;
 }
 
 export function SuspectsPanel({ caseData, state, dispatch }: PanelProps) {
+  const ui = useUi();
   const [challenging, setChallenging] = useState<string | null>(null);
   const [choice, setChoice] = useState('');
   const [feedback, setFeedback] = useState<Feedback | null>(null);
@@ -22,16 +24,12 @@ export function SuspectsPanel({ caseData, state, dispatch }: PanelProps) {
     if (!choice) return;
     const hit = findContradiction(caseData, claimId, choice);
     dispatch({ type: 'challenge', claimId, evidenceId: choice });
-    // A hit is already logged above the claim, so only confirm it here.
-    setFeedback({ claimId, found: !!hit, text: hit ? 'Logged above.' : caseData.noContradictionText });
+    setFeedback({ claimId, found: !!hit });
   };
 
   return (
     <div>
-      <p className="muted">
-        Challenge a statement with evidence you have examined. If a record proves the statement false, it is logged
-        as a contradiction.
-      </p>
+      <p className="muted">{ui.suspects.instructions}</p>
       <div className="suspects">
         {caseData.suspects.map((s) => (
           <article key={s.id} className="suspect">
@@ -49,10 +47,10 @@ export function SuspectsPanel({ caseData, state, dispatch }: PanelProps) {
                 const isOpen = challenging === c.id;
                 return (
                   <li key={c.id} className={`claim${found.length ? ' claim--broken' : ''}`}>
-                    <blockquote>“{c.text}”</blockquote>
+                    <blockquote>{ui.quote(c.text)}</blockquote>
                     {found.map((f) => (
                       <p key={f.evidenceId} className="contradiction">
-                        <strong>Contradiction:</strong> {caseData.evidence.find((e) => e.id === f.evidenceId)?.name}.{' '}
+                        <strong>{ui.suspects.contradiction}</strong> {caseData.evidence.find((e) => e.id === f.evidenceId)?.name}.{' '}
                         {f.explanation}
                       </p>
                     ))}
@@ -65,22 +63,22 @@ export function SuspectsPanel({ caseData, state, dispatch }: PanelProps) {
                           setFeedback(null);
                         }}
                       >
-                        Challenge this statement
+                        {ui.suspects.challenge}
                       </button>
                     ) : (
                       <div className="challenge">
                         {examined.length === 0 ? (
-                          <p className="muted">Examine some evidence first.</p>
+                          <p className="muted">{ui.suspects.examineFirst}</p>
                         ) : (
                           <>
-                            <label htmlFor={`pick-${c.id}`}>Compare with:</label>
+                            <label htmlFor={`pick-${c.id}`}>{ui.suspects.compareWith}</label>
                             <select
                               id={`pick-${c.id}`}
                               value={choice}
                               onChange={(e) => setChoice(e.target.value)}
                               autoFocus
                             >
-                              <option value="">Choose examined evidence…</option>
+                              <option value="">{ui.suspects.choosePlaceholder}</option>
                               {examined.map((e) => (
                                 <option key={e.id} value={e.id}>
                                   {e.name}
@@ -88,18 +86,18 @@ export function SuspectsPanel({ caseData, state, dispatch }: PanelProps) {
                               ))}
                             </select>
                             <button className="btn btn--small btn--primary" onClick={() => compare(c.id)} disabled={!choice}>
-                              Compare
+                              {ui.suspects.compare}
                             </button>
                           </>
                         )}
                         <button className="btn btn--small btn--ghost" onClick={() => setChallenging(null)}>
-                          Cancel
+                          {ui.suspects.cancel}
                         </button>
                         <p className="feedback" role="status">
                           {feedback?.claimId === c.id && (
                             <span className={feedback.found ? 'feedback--hit' : ''}>
-                              {feedback.found ? 'Contradiction found. ' : ''}
-                              {feedback.text}
+                              {/* A hit is already logged above the claim, so only confirm it here. */}
+                              {feedback.found ? `${ui.suspects.found} ${ui.suspects.loggedAbove}` : caseData.noContradictionText}
                             </span>
                           )}
                         </p>

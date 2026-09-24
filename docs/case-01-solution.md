@@ -1,7 +1,7 @@
 # ⚠️ SPOILERS — Case 01: The Last Guest at Hotel Vesper
 
 This file contains the full solution. Don't read it before you playtest.
-The playable content is in `src/cases/case01.ts`. Keep both files in sync.
+The playable content is in `src/cases/case01/` (`rules.ts` = ids and answers; `en.ts`, `ru.ts` = text). Keep all of them in sync.
 
 ## The question put to the player
 
@@ -103,3 +103,34 @@ missing, so Odile had no reason to falsify it. Her own lie was about her own abs
 - The Lisbon forgery is backstory told through the notebook. Nothing else corroborates it.
 - The clue for the third deduction question has to be the shoe list. The notebook contradicts *ruth-stranger*
   too, but it doesn't name her, so it isn't accepted.
+
+## Russian localization (`src/cases/case01/ru.ts`)
+
+The Russian text was reviewed line by line against this map on 2026-09-24. All six items of evidence and all eight
+statements support exactly the same reasoning. The rules and accepted answers are shared, and a test compares the
+rules of both builds.
+
+**Names:** Джулиан Марш, Рут Кэллоуэй, доктор Феликс Арден, Одиль Вэнс, отель «Веспер».
+
+**Deliberate adaptations** (the meaning is unchanged):
+
+| English | Russian | Why |
+|---|---|---|
+| Note signed "— F." | «— Ф.» | Keeps the frame-up: Ф. = Феликс. The notebook's "owe F." → «должен Ф.» matches. |
+| Initials "O.V." / "O. Vance" | «О. В.» / «О. Вэнс» | Matches Одиль Вэнс. |
+| Log times 11:33, 11:34, 11:49, 11:52 | 23:33, 23:34, 23:49, 23:52 | Russian readers read "11:33" as morning. |
+| Shoe list 12:30 | 00:30 | "12:30" reads as midday in Russian and would break the timeline. |
+| Prose "half past eleven", "half past midnight" | «в половине двенадцатого», «в половине первого ночи» | Natural phrasing, same times. |
+| "wine store" | «винная кладовая» | Not «погреб»: the store is in the stable block, not underground. |
+| Quotation marks “ ” / ‘ ’ | « » / „ “ | Russian typography. |
+
+**Gender audit.** Russian grammar marks gender in past-tense verbs and adjectives, so every form was checked
+against the English. Ruth (Mrs, "she"), Odile ("she"), Felix ("he") and Julian ("he") are gendered in English
+too, so nothing new is revealed. The note's author stays ungendered («Приходите один — там всё и уладим»).
+Hints use neutral forms («Двое», «кто мог её написать»), as does the proof question («этот человек выходил»).
+The generator log's last line is phrased without a verb («обратно к стойке»), so it adds no clue.
+"The night clerk" in the intro and solution is «ночной администратор», a generic masculine noun that is normal
+for any gender and matches the neutral English.
+
+**Tested automatically** (`src/i18n/i18n.test.ts`): identical keys and paragraph counts; no Latin letters left in the
+Russian case text; every number in every document matches after the 24-hour conversion; identical rules and verdicts.

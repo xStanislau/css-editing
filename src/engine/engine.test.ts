@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { case01 } from '../cases/case01';
+import { case01 as case01ByLocale } from '../cases/case01';
 import { contradictionKey, evaluateDeduction, findContradiction, validateCase } from './logic';
 import {
   loadProgress,
@@ -11,6 +11,7 @@ import {
 } from './progress';
 import { reduce } from './reducer';
 
+const case01 = case01ByLocale.en;
 const correct = { where: 'wine-store', who: 'ruth', proof: 'shoes' };
 
 function memoryStore(initial: Record<string, string> = {}): KeyValueStore & { data: Record<string, string> } {

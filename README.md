@@ -33,16 +33,20 @@ Instructions are in its header.
 - **Progress** saves to `localStorage` automatically. Corrupt or tampered saves fall back to a fresh game. There is a restart button.
 - Keyboard-accessible (native buttons and radios, ARIA tabs with arrow keys, visible focus), and responsive down to 320px.
 - All art is labelled **placeholder** boxes. The label text doubles as an art brief.
+- **English and Russian.** The first visit follows the browser's preferred language, and an explicit choice from the
+  "English / Русский" switch is remembered. Switching keeps progress on every screen.
 
 ## Layout
 
 ```
-src/engine/     Case-agnostic logic: types, deduction/contradiction checks, reducer, save/load (+ tests)
-src/cases/      Case content as typed data (case01.ts). ⚠️ contains the solution
+src/engine/     Case-agnostic logic: types, buildCase (rules + text), checks, reducer, save/load (+ tests)
+src/cases/      Case content: case01/rules.ts (ids, answers), en.ts / ru.ts (text). ⚠️ contains the solution
+src/i18n/       Language detection/choice, interface strings for en + ru (+ parity tests)
 src/components/ React screens: Intro, Board (Evidence / Suspects / Hints / Deduce tabs), Result
-docs/           brief, roadmap, progress, case-01-solution (⚠️ spoilers)
+docs/           brief, roadmap, progress, playtest template, case-01-solution (⚠️ spoilers)
 legacy/         The repository's original CSS live-editing demo, kept untouched
 ```
 
-To add a case, write a new `CaseData` object and pass it to `<App caseData={...} />` in `src/main.tsx`.
-`validateCase()` checks the ids it references.
+To add a case, write `rules.ts` plus one text file per language, build them with `buildCase()`, and pass the
+result to `<App cases={...} />` in `src/main.tsx`. `buildCase()` throws if any text is missing.
+To add a language, add it to `LOCALES` in `src/i18n/locale.ts`. TypeScript then points at every missing string.

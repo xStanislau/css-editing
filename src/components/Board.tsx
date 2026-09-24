@@ -2,6 +2,7 @@ import { useRef, useState, type Dispatch, type KeyboardEvent } from 'react';
 import type { CaseData } from '../engine/types';
 import type { Progress } from '../engine/progress';
 import type { Action } from '../engine/reducer';
+import { useUi } from '../i18n/ui';
 import { EvidencePanel } from './EvidencePanel';
 import { SuspectsPanel } from './SuspectsPanel';
 import { HintsPanel } from './HintsPanel';
@@ -13,15 +14,11 @@ export interface PanelProps {
   dispatch: Dispatch<Action>;
 }
 
-const TABS = [
-  { id: 'evidence', label: 'Evidence' },
-  { id: 'suspects', label: 'Suspects' },
-  { id: 'hints', label: 'Hints' },
-  { id: 'deduce', label: 'Deduce' },
-] as const;
-type TabId = (typeof TABS)[number]['id'];
+const TABS = ['evidence', 'suspects', 'hints', 'deduce'] as const;
+type TabId = (typeof TABS)[number];
 
 export function Board({ caseData, state, dispatch, onRestart }: PanelProps & { onRestart: () => void }) {
+  const ui = useUi();
   const [tab, setTab] = useState<TabId>('evidence');
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
 
@@ -36,8 +33,8 @@ export function Board({ caseData, state, dispatch, onRestart }: PanelProps & { o
       : null;
     if (next === null) return;
     e.preventDefault();
-    setTab(TABS[next].id);
-    tabRefs.current[TABS[next].id]?.focus();
+    setTab(TABS[next]);
+    tabRefs.current[TABS[next]]?.focus();
   };
 
   const badge = (id: TabId) =>
@@ -50,35 +47,35 @@ export function Board({ caseData, state, dispatch, onRestart }: PanelProps & { o
     <div className="board">
       <header className="board__header">
         <div>
-          <p className="eyebrow">Hotel Vesper · Case 01</p>
+          <p className="eyebrow">{ui.boardEyebrow}</p>
           <h1 className="board__title">{caseData.title}</h1>
         </div>
         <button className="btn btn--ghost" onClick={onRestart}>
-          Restart
+          {ui.board.restart}
         </button>
       </header>
       <p className="question-line">
-        <strong>Question:</strong> {caseData.question}
+        <strong>{ui.board.question}</strong> {caseData.question}
       </p>
 
-      <div role="tablist" aria-label="Case sections" className="tabs">
+      <div role="tablist" aria-label={ui.board.sectionsLabel} className="tabs">
         {TABS.map((t, i) => (
           <button
-            key={t.id}
+            key={t}
             ref={(el) => {
-              tabRefs.current[t.id] = el;
+              tabRefs.current[t] = el;
             }}
             role="tab"
-            id={`tab-${t.id}`}
-            aria-selected={tab === t.id}
-            aria-controls={`panel-${t.id}`}
-            tabIndex={tab === t.id ? 0 : -1}
+            id={`tab-${t}`}
+            aria-selected={tab === t}
+            aria-controls={`panel-${t}`}
+            tabIndex={tab === t ? 0 : -1}
             className="tab"
-            onClick={() => setTab(t.id)}
+            onClick={() => setTab(t)}
             onKeyDown={(e) => onTabKey(e, i)}
           >
-            {t.label}
-            {badge(t.id) && <span className="tab__badge"> {badge(t.id)}</span>}
+            {ui.tabs[t]}
+            {badge(t) && <span className="tab__badge"> {badge(t)}</span>}
           </button>
         ))}
       </div>
