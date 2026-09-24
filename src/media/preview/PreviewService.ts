@@ -108,7 +108,12 @@ export class PreviewService {
           const times = this.demuxer.keyframeTimes();
           // Hand out a copy: the cached bitmap stays ours.
           req.resolve(bitmap ? { time: times[index], bitmap: await createImageBitmap(bitmap) } : null);
-          if (index >= 0) this.queueNeighbours(index);
+          if (index >= 0) {
+            // Cached thumbnail answered instantly; now make sure the full-res
+            // frame under the cursor is ready too, so a click seeks instantly.
+            if (!this.pending && this.lastFull?.index !== index) await this.decodeFull(index);
+            this.queueNeighbours(index);
+          }
           continue;
         }
         const next = this.prefetchQueue.shift();
@@ -159,6 +164,15 @@ export class PreviewService {
       old.close();
     }
     return bitmap;
+  }
+
+  private async decodeFull(index: number): Promise<void> {
+    const chunk = await this.demuxer.readKeyframe(index);
+    if (!chunk || this.disposed) return;
+    const frame = await this.decode(chunk);
+    if (!frame) return;
+    this.lastFull?.frame.close();
+    this.lastFull = { index, frame };
   }
 
   /** Decode one self-contained keyframe on the preview decoder. */

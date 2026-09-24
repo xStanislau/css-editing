@@ -38,6 +38,26 @@ export interface PlayerSnapshot {
 const MAX_ZOOM = 8;
 
 type FrameListener = (t: Float64Array) => void;
+
+/**
+ * Quality-of-experience metrics, the numbers streaming services live by.
+ * Also emitted as `performance.measure()` entries (prism:ttff, prism:seek,
+ * prism:seek-instant, prism:rebuffer, prism:preview) for RUM/analytics.
+ */
+export interface QoeStats {
+  /** Time to first frame after the last load (ms). */
+  ttffMs: number | null;
+  /** Last seek: request -> exact frame on screen (ms). */
+  lastSeekMs: number | null;
+  /** Last seek: request -> instant preview frame on screen (ms). */
+  lastSeekInstantMs: number | null;
+  seekCount: number;
+  seekTotalMs: number;
+  rebufferCount: number;
+  rebufferTotalMs: number;
+  /** Last seek-bar preview: request -> bitmap received (ms). */
+  lastPreviewMs: number | null;
+}
 type PreviewListener = (bitmap: ImageBitmap, time: number) => void;
 
 /**
@@ -90,6 +110,22 @@ export class PlayerController {
    */
   private pendingSeek: { time: number; until: number } | null = null;
   private readonly previewListeners = new Set<PreviewListener>();
+  readonly qoe: QoeStats = {
+    ttffMs: null,
+    lastSeekMs: null,
+    lastSeekInstantMs: null,
+    seekCount: 0,
+    seekTotalMs: 0,
+    rebufferCount: 0,
+    rebufferTotalMs: 0,
+    lastPreviewMs: null,
+  };
+  private loadAt = 0;
+  /** Request time of each in-flight seek, by sequence number. */
+  private readonly seekAt = new Map<number, number>();
+  private seekSeq = 0;
+  private rebufferAt: number | null = null;
+  private readonly previewAt = new Map<number, number>();
   private previewSeq = 0;
 
   constructor(host: HTMLElement) {
@@ -161,6 +197,8 @@ export class PlayerController {
   load(source: MediaSourceInput): void {
     const sourceName = source.kind === 'file' ? source.file.name : source.url.split('/').pop() || source.url;
     this.update({ info: null, error: null, sourceName, loop: null, subtitles: { tracks: [], external: null, active: null } });
+    this.loadAt = performance.now();
+    Object.assign(this.qoe, { ttffMs: null, lastSeekMs: null, lastSeekInstantMs: null, seekCount: 0, seekTotalMs: 0, rebufferCount: 0, rebufferTotalMs: 0 });
     this.send({ type: 'load', source });
   }
 
@@ -189,7 +227,8 @@ export class PlayerController {
     const duration = this.duration();
     const target = Math.max(0, duration ? Math.min(time, duration) : time);
     this.pendingSeek = { time: target, until: performance.now() + 400 };
-    this.send({ type: 'seek', time: target });
+    this.seekAt.set(++this.seekSeq, performance.now());
+    this.send({ type: 'seek', time: target, seq: this.seekSeq });
   }
 
   seekBy(delta: number): void {
@@ -277,7 +316,8 @@ export class PlayerController {
 
   /** Ask for a real-frame preview at `time`; only the latest answer is delivered. */
   requestPreview(time: number): void {
-    this.send({ type: 'preview', id: ++this.previewSeq, time });
+    this.previewAt.set(++this.previewSeq, performance.now());
+    this.send({ type: 'preview', id: this.previewSeq, time });
   }
 
   /** Receive preview bitmaps; the listener must draw synchronously (the bitmap is closed after). */
@@ -423,7 +463,11 @@ export class PlayerController {
         void this.attachAudio(msg.sab, msg.sampleRate, msg.channels);
         break;
       case 'state':
+        this.trackRebuffer(msg.state, msg.cause);
         this.update({ state: msg.state });
+        break;
+      case 'first-frame':
+        this.recordFirstFrame(msg.reason, msg.seq);
         break;
       case 'render-mode':
         this.update({ renderMode: msg.mode });
@@ -438,6 +482,7 @@ export class PlayerController {
         this.downloadSnapshot(msg.blob, msg.time);
         break;
       case 'preview':
+        if (msg.bitmap) this.recordPreview(msg.id);
         if (msg.bitmap) {
           if (msg.id === this.previewSeq) for (const fn of this.previewListeners) fn(msg.bitmap, msg.time);
           msg.bitmap.close();
@@ -488,6 +533,56 @@ export class PlayerController {
 
     this.reportLatency();
     this.latencyTimer ??= setInterval(() => this.reportLatency(), 2000);
+  }
+
+  // ------------------------------------------------------------------ QoE
+
+  private measure(name: string, start: number): number {
+    const end = performance.now();
+    try {
+      performance.measure(name, { start, end });
+    } catch {
+      // Some embedders disable the User Timing API; the numbers still count.
+    }
+    return end - start;
+  }
+
+  private recordFirstFrame(reason: 'load' | 'seek' | 'seek-preview', seq?: number): void {
+    if (reason === 'load') {
+      this.qoe.ttffMs = this.measure('prism:ttff', this.loadAt);
+      return;
+    }
+    const at = seq !== undefined ? this.seekAt.get(seq) : undefined;
+    if (at === undefined) return;
+    if (reason === 'seek-preview') {
+      this.qoe.lastSeekInstantMs = this.measure('prism:seek-instant', at);
+      return;
+    }
+    const ms = this.measure('prism:seek', at);
+    this.qoe.lastSeekMs = ms;
+    this.qoe.seekCount++;
+    this.qoe.seekTotalMs += ms;
+    // Seeks superseded before showing a frame are dropped, not counted.
+    for (const k of this.seekAt.keys()) if (k <= seq!) this.seekAt.delete(k);
+  }
+
+  /** A rebuffer is a stall during playback (not buffering caused by a seek or start). */
+  private trackRebuffer(to: PlaybackState, cause?: 'seek' | 'start' | 'stall'): void {
+    if (to === 'buffering' && cause === 'stall') this.rebufferAt = performance.now();
+    else if (this.rebufferAt !== null && to !== 'buffering') {
+      if (to === 'playing') {
+        this.qoe.rebufferCount++;
+        this.qoe.rebufferTotalMs += this.measure('prism:rebuffer', this.rebufferAt);
+      }
+      this.rebufferAt = null;
+    }
+  }
+
+  private recordPreview(id: number): void {
+    const at = this.previewAt.get(id);
+    if (at !== undefined) this.qoe.lastPreviewMs = this.measure('prism:preview', at);
+    // Drop bookkeeping for this and any superseded requests.
+    for (const k of this.previewAt.keys()) if (k <= id) this.previewAt.delete(k);
   }
 
   private downloadSnapshot(blob: Blob, time: number): void {

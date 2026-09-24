@@ -6,8 +6,15 @@
     <meta name="color-scheme" content="dark" />
     <title>Prism Player</title>
   </head>
-  <body class="bg-ink text-white antialiased">
-    <div id="root"></div>
+  <body class="bg-ink text-white antialiased" style="background: #07080c; margin: 0">
+    <!-- Static shell: paints instantly (FCP) while the app bundle loads; React replaces it. -->
+    <div id="root">
+      <main style="max-width: 72rem; margin: 0 auto; padding: 2rem 1.5rem; font-family: ui-sans-serif, system-ui, sans-serif">
+        <h1 style="font-size: 1.5rem; font-weight: 700; margin: 0; color: #fff">Prism<span style="color: #7c5cff">.</span></h1>
+        <p style="font-size: 0.875rem; color: rgba(255, 255, 255, 0.5); margin: 0.25rem 0 1.5rem">WebCodecs · WebGPU · AudioWorklet — no &lt;video&gt; element</p>
+        <div style="aspect-ratio: 16 / 9; border-radius: 1rem; background: #000; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1)"></div>
+      </main>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

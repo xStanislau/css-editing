@@ -1,0 +1,164 @@
+[
+  {
+    "metric": "First contentful paint",
+    "value": 228.9,
+    "unit": "ms",
+    "target": "< 300",
+    "ok": true
+  },
+  {
+    "metric": "DOMContentLoaded",
+    "value": 135.5,
+    "unit": "ms"
+  },
+  {
+    "metric": "Initial JS (decoded)",
+    "value": 260.3,
+    "unit": "KB"
+  },
+  {
+    "metric": "TTFF MP4 (median of 3)",
+    "value": 114.6,
+    "unit": "ms",
+    "target": "< 500",
+    "ok": true
+  },
+  {
+    "metric": "TTFF MKV (median of 3)",
+    "value": 82.8,
+    "unit": "ms",
+    "target": "< 500",
+    "ok": true
+  },
+  {
+    "metric": "Seek → exact frame (median)",
+    "value": 50.5,
+    "unit": "ms",
+    "target": "< 250",
+    "ok": true
+  },
+  {
+    "metric": "Seek → exact frame (p95)",
+    "value": 67.3,
+    "unit": "ms"
+  },
+  {
+    "metric": "Seeks answered",
+    "value": "12/12",
+    "unit": ""
+  },
+  {
+    "metric": "Preview hover (cached, median)",
+    "value": 1.5,
+    "unit": "ms",
+    "target": "< 30",
+    "ok": true
+  },
+  {
+    "metric": "Click-seek → instant frame",
+    "value": 5.8,
+    "unit": "ms",
+    "target": "< 50",
+    "ok": true
+  },
+  {
+    "metric": "Preview hover (cold, median of 3)",
+    "value": 19.4,
+    "unit": "ms",
+    "target": "< 150",
+    "ok": true
+  },
+  {
+    "metric": "Main-thread busy during playback",
+    "value": 2.8,
+    "unit": "% of one core",
+    "target": "< 10",
+    "ok": true
+  },
+  {
+    "metric": "Long tasks (>50 ms) in 8 s",
+    "value": 0,
+    "unit": "count",
+    "target": "0",
+    "ok": true
+  },
+  {
+    "metric": "Total blocking time",
+    "value": 0,
+    "unit": "ms",
+    "target": "< 50",
+    "ok": true
+  },
+  {
+    "metric": "DOM mutations per second",
+    "value": 15.2,
+    "unit": "/s"
+  },
+  {
+    "metric": "Slowest input handler (our JS)",
+    "value": 6.5,
+    "unit": "ms",
+    "target": "< 16",
+    "ok": true
+  },
+  {
+    "metric": "Slowest input → next paint",
+    "value": 600,
+    "unit": "ms",
+    "target": "compositor-bound"
+  },
+  {
+    "metric": "JS heap (main)",
+    "value": 3.4,
+    "unit": "MB"
+  },
+  {
+    "metric": "Recovers after 40 seeks + scrub",
+    "value": "yes (2087 ms)",
+    "unit": "",
+    "target": "yes",
+    "ok": true
+  },
+  {
+    "metric": "Page errors during stress",
+    "value": 0,
+    "unit": "count",
+    "target": "0",
+    "ok": true
+  },
+  {
+    "metric": "Plays after 6 rapid loads",
+    "value": "yes",
+    "unit": "",
+    "target": "yes",
+    "ok": true
+  },
+  {
+    "metric": "Page errors during switching",
+    "value": 0,
+    "unit": "count",
+    "target": "0",
+    "ok": true
+  },
+  {
+    "metric": "Main heap growth over 35 s loop",
+    "value": 0.1,
+    "unit": "MB",
+    "target": "< 5",
+    "ok": true
+  },
+  {
+    "metric": "VideoFrame leak warnings",
+    "value": 0,
+    "unit": "count",
+    "target": "0",
+    "ok": true
+  },
+  {
+    "metric": "Page errors during soak",
+    "value": 0,
+    "unit": "count",
+    "target": "0",
+    "ok": true
+  }
+]

@@ -46,6 +46,7 @@ npm run sample     # regenerate public/samples (needs ffmpeg)
 
 npm test           # unit tests (ring buffer, clocks, demuxer on real MP4s)
 npm run test:e2e   # Playwright: load, play, A/V sync, seek, end (build + preview)
+npm run test:perf  # performance & responsiveness report -> test-results/perf-report.json
 ```
 
 The full engine needs Chrome/Edge 113+ (WebGPU + WebCodecs + OffscreenCanvas +
@@ -87,6 +88,29 @@ src/
   player/            PlayerController (main-thread facade) + React hooks
   ui/                Tailwind components: player, seek bar, stats, source bar
 ```
+
+## Performance budget
+
+`npm run test:perf` measures the numbers below and fails on regressions. The
+values are from a GPU-less CI container (software WebGPU): latency and
+main-thread numbers hold, rendering FPS does not.
+
+| Metric | Result | Budget |
+| --- | --- | --- |
+| First contentful paint (static HTML shell) | ~230 ms | < 300 ms |
+| Time to first frame, MP4 / MKV | ~115 / ~85 ms | < 500 ms |
+| Seek → exact frame (median / p95) | ~50 / ~70 ms | < 250 ms |
+| Click on hovered spot → instant frame | ~6 ms | < 50 ms |
+| Seek-bar preview, cold / cached | ~20 / ~2 ms | < 150 / < 30 ms |
+| Main thread busy during playback | ~3 % of a core | < 10 % |
+| Long tasks / total blocking time while playing | 0 / 0 ms | 0 / < 50 ms |
+| Slowest input handler | ~7 ms | < 16 ms |
+| Heap growth over a 35 s loop, VideoFrame leaks | ~0.1 MB, 0 | < 5 MB, 0 |
+| 40 rapid seeks + scrub, 6 rapid source switches | recovers, 0 errors | — |
+
+QoE is also exported at runtime as `performance.measure()` entries
+(`prism:ttff`, `prism:seek`, `prism:seek-instant`, `prism:rebuffer`,
+`prism:preview`) for real-user monitoring, and shown in the stats overlay.
 
 ## Pro tools
 

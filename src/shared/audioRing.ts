@@ -82,6 +82,16 @@ export class AudioRing {
     return (Atomics.load(this.ctl, Ctl.Write) - Atomics.load(this.ctl, Ctl.Read)) >>> 0;
   }
 
+  /**
+   * Frames that will actually be played. Unlike available(), this ignores
+   * stale audio a pending flush() is about to discard, so "enough buffered
+   * to start" decisions right after a seek look at post-seek audio only.
+   */
+  playable(): number {
+    const read = this.flushSettled() ? Atomics.load(this.ctl, Ctl.Read) : Atomics.load(this.ctl, Ctl.FlushTo);
+    return (Atomics.load(this.ctl, Ctl.Write) - read) >>> 0;
+  }
+
   get readCursor(): number {
     return Atomics.load(this.ctl, Ctl.Read) >>> 0;
   }

@@ -27,6 +27,7 @@ export function StatsOverlay({ controller, snapshot }: { controller: PlayerContr
           ['Queues', `decode ${t[T.DecodeQueue]} · frames ${t[T.FrameQueue]}`],
           ['Audio buf', `${t[T.AudioBufferedMs].toFixed(0)} ms · ${t[T.AudioUnderruns]} underruns`],
           ['A/V offset', `${t[T.AvDriftMs] >= 0 ? '+' : ''}${t[T.AvDriftMs].toFixed(1)} ms`],
+          ['QoE', qoeLine(controller)],
           ['Buffered', `${Math.max(0, t[T.BufferedEnd] - t[T.CurrentTime]).toFixed(1)} s ahead`],
         ];
         ref.current.textContent = rows.map(([k, v]) => `${k.padEnd(11)} ${v}`).join('\n');
@@ -41,4 +42,11 @@ export function StatsOverlay({ controller, snapshot }: { controller: PlayerContr
       className="pointer-events-none absolute top-3 left-3 z-20 max-w-[calc(100%-1.5rem)] overflow-hidden rounded-lg bg-black/70 px-3 py-2 font-mono text-[11px] leading-relaxed text-emerald-300 ring-1 ring-white/10 backdrop-blur-md"
     />
   );
+}
+
+function qoeLine(c: PlayerController): string {
+  const q = c.qoe;
+  const ms = (v: number | null) => (v === null ? '—' : `${Math.round(v)} ms`);
+  const avgSeek = q.seekCount ? q.seekTotalMs / q.seekCount : null;
+  return `TTFF ${ms(q.ttffMs)} · seek ${ms(avgSeek)} avg (instant ${ms(q.lastSeekInstantMs)}) · rebuffers ${q.rebufferCount}`;
 }

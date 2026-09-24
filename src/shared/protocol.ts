@@ -75,7 +75,8 @@ export type ToWorker =
   | { type: 'load'; source: MediaSourceInput }
   | { type: 'play' }
   | { type: 'pause' }
-  | { type: 'seek'; time: number }
+  /** `seq` lets QoE match the resulting first frame to this exact request. */
+  | { type: 'seek'; time: number; seq?: number }
   | { type: 'resize'; width: number; height: number }
   | { type: 'set-render-mode'; mode: RenderMode }
   | { type: 'set-picture'; picture: PictureSettings }
@@ -98,12 +99,18 @@ export type FromWorker =
   | { type: 'media-info'; info: MediaInfo }
   /** Worker allocated the PCM ring; UI must spin up AudioContext + worklet on it. */
   | { type: 'audio-ring'; sab: SharedArrayBuffer; sampleRate: number; channels: number }
-  | { type: 'state'; state: PlaybackState }
+  /** `cause` separates real stalls (rebuffering) from seek/start buffering. */
+  | { type: 'state'; state: PlaybackState; cause?: 'seek' | 'start' | 'stall' }
   | { type: 'render-mode'; mode: RenderMode }
   | { type: 'snapshot'; blob: Blob; time: number }
   /** Real decoded keyframe for the seek-bar tooltip (null if unavailable). */
   | { type: 'preview'; id: number; time: number; bitmap: ImageBitmap | null }
   | { type: 'subtitle-chunks'; chunks: SubtitleChunk[] }
+  /**
+   * QoE: a frame just reached the screen after a load or seek.
+   * `seek-preview` = the instant preview keyframe, `seek` = the exact target frame.
+   */
+  | { type: 'first-frame'; reason: 'load' | 'seek' | 'seek-preview'; seq?: number }
   /** Embedded fonts (MKV attachments) for ASS typesetting. */
   | { type: 'fonts'; fonts: Uint8Array[] }
   /** Informational message (e.g. automatic quality change), not an error. */

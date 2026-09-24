@@ -86,6 +86,10 @@ export class MediaEngine implements DemuxSink {
   private view: ViewSettings = DEFAULT_VIEW;
   private loop: LoopRange | null = null;
   private lastSeekTarget = 0;
+  /** What the pending preroll frame answers (for QoE timing on the UI side). */
+  private prerollReason: 'load' | 'seek' = 'load';
+  /** UI sequence number of the seek the pending preroll answers. */
+  private seekSeq: number | undefined;
   /** Subtitle events gathered since the last tick (posted in one batch). */
   private pendingSubtitles: SubtitleChunk[] = [];
   // Frame pacing (see FramePacer.ts).
@@ -113,6 +117,7 @@ export class MediaEngine implements DemuxSink {
     const gen = ++this.loadGeneration;
     this.setState('loading');
     this.preroll = true;
+    this.prerollReason = 'load';
 
     const source = createByteSource(input);
     let demuxer: Demuxer | null = null;
@@ -192,7 +197,7 @@ export class MediaEngine implements DemuxSink {
     const m = this.media;
     if (!m) return;
     if (this.state === 'ended') this.seek(0);
-    if (this.state !== 'playing') this.setState('buffering');
+    if (this.state !== 'playing') this.setState('buffering', 'start');
   }
 
   pause(): void {
@@ -201,7 +206,8 @@ export class MediaEngine implements DemuxSink {
     if (this.media && this.state !== 'ended') this.setState('paused');
   }
 
-  seek(time: number): void {
+  seek(time: number, seq?: number): void {
+    this.seekSeq = seq;
     const m = this.media;
     if (!m) return;
     const target = Math.max(0, Math.min(time, m.info.duration || time));
@@ -216,10 +222,14 @@ export class MediaEngine implements DemuxSink {
     this.preroll = true;
     // Instant feedback: if the preview decoder already holds the keyframe this
     // seek starts from, show it now; the exact frame replaces it when decoded.
+    this.prerollReason = 'seek';
     const quick = m.preview?.frameForSeek(target);
-    if (quick) this.present(quick, true);
+    if (quick) {
+      this.present(quick, true);
+      this.post({ type: 'first-frame', reason: 'seek-preview', seq: this.seekSeq });
+    }
     this.writeTelemetry(target);
-    this.setState(this.wantPlay ? 'buffering' : 'paused');
+    this.setState(this.wantPlay ? 'buffering' : 'paused', 'seek');
   }
 
   resize(width: number, height: number): void {
@@ -417,7 +427,7 @@ export class MediaEngine implements DemuxSink {
       const videoStarved = !m.audio && m.video && !m.video.drained && m.video.frames.length === 0;
       if (audioStarved || videoStarved) {
         m.clock.pause();
-        this.setState('buffering');
+        this.setState('buffering', 'stall');
       }
       return;
     }
@@ -442,6 +452,7 @@ export class MediaEngine implements DemuxSink {
       if (first) {
         this.present(first, visible);
         this.preroll = false;
+        this.post({ type: 'first-frame', reason: this.prerollReason, seq: this.prerollReason === 'seek' ? this.seekSeq : undefined });
       }
     } else if (this.state === 'playing' || this.state === 'buffering' || this.state === 'ended') {
       let target: number;
@@ -656,13 +667,13 @@ export class MediaEngine implements DemuxSink {
     this.writeTelemetry(0);
   }
 
-  private setState(state: PlaybackState): void {
+  private setState(state: PlaybackState, cause?: 'seek' | 'start' | 'stall'): void {
     if (state === this.state) return;
     this.state = state;
     // Any discontinuity invalidates the smoothed clock and cadence history.
     this.smoothClock.reset();
     this.cadence.reset();
-    this.post({ type: 'state', state });
+    this.post({ type: 'state', state, cause });
   }
 
   private fatal(message: string): void {

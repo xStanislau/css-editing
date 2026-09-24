@@ -5,5 +5,5 @@
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "types": ["node", "@webgpu/types"]
   },
-  "include": ["tests", "vitest.config.ts", "playwright.config.ts"]
+  "include": ["tests", "vitest.config.ts", "playwright.config.ts", "playwright.perf.config.ts"]
 }

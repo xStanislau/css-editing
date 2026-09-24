@@ -101,3 +101,16 @@ describe('AudioRing cursor wrap', () => {
     expect(ring.readCursor).toBe(64);
   });
 });
+
+describe('AudioRing playable()', () => {
+  it('does not count audio that a pending flush will discard', () => {
+    const ring = AudioRing.create(1000, 1, 1);
+    ring.write([ramp(512)], 0, 512);
+    expect(ring.playable()).toBe(512);
+    ring.flush(); // seek: consumer hasn't applied it yet
+    expect(ring.available()).toBe(512); // still occupies space (free() stays conservative)
+    expect(ring.playable()).toBe(0); // but none of it will be heard
+    ring.write([ramp(128)], 0, 128);
+    expect(ring.playable()).toBe(128);
+  });
+});

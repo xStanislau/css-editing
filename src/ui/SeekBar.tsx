@@ -58,8 +58,12 @@ export function SeekBar({
       const played = dragFraction.current ?? t[T.CurrentTime] / d;
       el.style.setProperty('--played', String(Math.min(1, played)));
       el.style.setProperty('--buffered', String(Math.min(1, t[T.BufferedEnd] / d)));
-      el.setAttribute('aria-valuenow', String(Math.round(played * d)));
-      el.setAttribute('aria-valuetext', formatTime(played * d));
+      // ARIA only changes once per second: skip redundant DOM writes.
+      const now = String(Math.round(played * d));
+      if (el.getAttribute('aria-valuenow') !== now) {
+        el.setAttribute('aria-valuenow', now);
+        el.setAttribute('aria-valuetext', formatTime(played * d));
+      }
     }, []),
   );
 

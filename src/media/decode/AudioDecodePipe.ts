@@ -70,7 +70,7 @@ export class AudioDecodePipe {
 
   /** Seconds of audio queued in the ring (what the sound card will play next). */
   get bufferedSeconds(): number {
-    return this.ring ? this.ring.available() / this.ring.sampleRate : 0;
+    return this.ring ? this.ring.playable() / this.ring.sampleRate : 0;
   }
 
   push(chunk: EncodedAudioChunk): void {

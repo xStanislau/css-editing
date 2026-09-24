@@ -28,7 +28,7 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
         engine.pause();
         break;
       case 'seek':
-        engine.seek(msg.time);
+        engine.seek(msg.time, msg.seq);
         break;
       case 'resize':
         engine.resize(msg.width, msg.height);
