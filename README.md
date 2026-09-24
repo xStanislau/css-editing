@@ -50,6 +50,9 @@ npm run test:perf  # performance & responsiveness report -> test-results/perf-re
 npm run test:gpu   # Anime4K quality (PSNR) + GPU vs CPU reference
 ```
 
+Browser tests use your real GPU. In containers or CI without one, set
+`SOFTWARE_GPU=1` (SwiftShader). Add `--headed` to watch them run.
+
 The full engine needs Chrome/Edge 113+ (WebGPU + WebCodecs + OffscreenCanvas +
 AudioWorklet). Other browsers get **compatibility mode**, which plays through a
 plain `<video>` element and lists what's missing.

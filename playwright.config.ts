@@ -10,6 +10,8 @@ import { existsSync } from 'node:fs';
  * Set CHROMIUM_PATH to use a preinstalled Chromium instead of a downloaded one.
  */
 const chromium = process.env.CHROMIUM_PATH;
+/** SOFTWARE_GPU=1 forces SwiftShader (CI/containers without a GPU); otherwise the real GPU is used. */
+const software = process.env.SOFTWARE_GPU === '1';
 const swiftshaderIcd = chromium && join(dirname(chromium), 'vk_swiftshader_icd.json');
 export default defineConfig({
   testDir: 'tests/e2e',
@@ -24,13 +26,10 @@ export default defineConfig({
       executablePath: chromium || undefined,
       args: [
         '--enable-unsafe-webgpu',
-        '--enable-features=Vulkan',
-        '--use-vulkan=swiftshader',
-        '--use-angle=swiftshader',
-        '--use-webgpu-adapter=swiftshader',
         '--autoplay-policy=no-user-gesture-required',
+        ...(software ? ['--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader', '--use-webgpu-adapter=swiftshader'] : []),
       ],
-      env: swiftshaderIcd && existsSync(swiftshaderIcd) ? { ...process.env, VK_ICD_FILENAMES: swiftshaderIcd } : undefined,
+      env: software && swiftshaderIcd && existsSync(swiftshaderIcd) ? { ...process.env, VK_ICD_FILENAMES: swiftshaderIcd } : undefined,
     },
   },
   webServer: {

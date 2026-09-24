@@ -1,0 +1,44 @@
+[
+  {
+    "name": "bilinear",
+    "psnr": 22.07,
+    "gain": 0,
+    "passes": 0,
+    "ms": 0
+  },
+  {
+    "name": "fast",
+    "psnr": 27.55,
+    "gain": 5.48,
+    "passes": 5,
+    "ms": 60
+  },
+  {
+    "name": "balanced",
+    "psnr": 28.65,
+    "gain": 6.57,
+    "passes": 9,
+    "ms": 37
+  },
+  {
+    "name": "quality",
+    "psnr": 30.12,
+    "gain": 8.05,
+    "passes": 18,
+    "ms": 118
+  },
+  {
+    "name": "restore",
+    "psnr": 25.2,
+    "gain": 3.13,
+    "passes": 17,
+    "ms": 58
+  },
+  {
+    "name": "denoise",
+    "psnr": 28.52,
+    "gain": 6.45,
+    "passes": 9,
+    "ms": 36
+  }
+]
