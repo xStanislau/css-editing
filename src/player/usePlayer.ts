@@ -17,6 +17,7 @@ const IDLE: PlayerSnapshot = {
   loop: null,
   subtitles: { tracks: [], external: null, active: null },
   enhance: null,
+  compare: null,
 };
 const noopSubscribe = () => () => {};
 

@@ -77,3 +77,41 @@ test('Anime4K: E enables the chain; low-res video is upscaled 2x on the GPU', as
   await page.keyboard.press('e'); // back to zero-copy
   await expect(stats).toContainText('WebGPU zero-copy external texture');
 });
+
+test('Anime4K: chains stay compiled, so switching back is instant', async ({ page }) => {
+  await page.getByPlaceholder(/https:/).fill('http://localhost:4173/samples/sample-lineart-270p.mkv');
+  await page.getByRole('button', { name: 'Load URL' }).click();
+  await expect(page.getByRole('button', { name: 'Play', exact: true }).first()).toBeVisible({ timeout: 15_000 });
+  await page.keyboard.press('s');
+  const stats = page.locator('pre');
+  await page.getByRole('button', { name: 'Anime4K (e)' }).click();
+  await page.getByRole('menuitemradio', { name: /Quality/ }).click();
+  await expect(stats).toContainText('Anime4K quality', { timeout: 30_000 });
+  await page.getByRole('menuitemradio', { name: /Balanced/ }).click();
+  await expect(stats).toContainText('Anime4K balanced · 2× upscale', { timeout: 30_000 });
+  // Back to Quality: served from the cache, never shows "compiling".
+  await page.getByRole('menuitemradio', { name: /Quality/ }).click();
+  await expect(page.getByRole('menu', { name: 'Anime4K' })).not.toContainText('compiling');
+  await expect(stats).toContainText('Anime4K quality', { timeout: 3_000 });
+});
+
+test('Compare: V shows original | Anime4K with a draggable divider', async ({ page }) => {
+  await page.getByPlaceholder(/https:/).fill('http://localhost:4173/samples/sample-lineart-270p.mkv');
+  await page.getByRole('button', { name: 'Load URL' }).click();
+  await expect(page.getByRole('button', { name: 'Play', exact: true }).first()).toBeVisible({ timeout: 15_000 });
+  await page.keyboard.press('v');
+  const divider = page.getByRole('slider', { name: 'Compare split' });
+  await expect(divider).toHaveAttribute('aria-valuenow', '50');
+  await expect(page.getByRole('button', { name: 'Anime4K (e)' })).toHaveText(/BALANCED/);
+  const box = (await divider.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 - 200, box.y + box.height / 2, { steps: 4 });
+  await page.mouse.up();
+  expect(Number(await divider.getAttribute('aria-valuenow'))).toBeLessThan(40);
+  // Dragging the divider must not toggle playback.
+  await expect(page.getByRole('button', { name: 'Play (k)' })).toBeVisible();
+  // Turning Anime4K off ends the comparison.
+  await page.keyboard.press('e');
+  await expect(divider).toBeHidden();
+});

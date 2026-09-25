@@ -38,6 +38,21 @@ export function EnhanceMenu({ player, snap }: { player: PlayerController; snap: 
       </div>
       {row('direct', 'Off', 'Zero-copy, lowest power')}
       {ENHANCE_PRESETS.map((p) => row(p.id, p.label, p.detail))}
+      <div className="my-1 h-px bg-white/10" />
+      <button
+        role="menuitemcheckbox"
+        aria-checked={snap.compare !== null}
+        onClick={() => player.toggleCompare()}
+        className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm text-white/80 transition hover:bg-white/10"
+      >
+        <span>
+          <span className="block">Compare before / after</span>
+          <span className="block text-xs text-white/45">Drag the divider · V</span>
+        </span>
+        <span className={`h-5 w-9 rounded-full p-0.5 transition ${snap.compare !== null ? 'bg-accent' : 'bg-white/20'}`}>
+          <span className={`block size-4 rounded-full bg-white transition ${snap.compare !== null ? 'translate-x-4' : ''}`} />
+        </span>
+      </button>
     </div>
   );
 }

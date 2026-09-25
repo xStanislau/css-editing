@@ -36,6 +36,12 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
       case 'set-render-mode':
         engine.setRenderMode(msg.mode);
         break;
+      case 'set-compare':
+        engine.setCompare(msg.split);
+        break;
+      case 'prewarm-enhance':
+        engine.prewarmEnhance(msg.preset);
+        break;
       case 'set-picture':
         engine.setPicture(msg.picture);
         break;

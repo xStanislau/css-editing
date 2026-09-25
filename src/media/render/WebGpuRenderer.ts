@@ -4,6 +4,7 @@ import { loadChain } from './enhance/presets';
 import {
   DEFAULT_PICTURE,
   DEFAULT_VIEW,
+  type EnhancePreset,
   type EnhanceStatus,
   type PictureSettings,
   type RenderMode,
@@ -12,7 +13,11 @@ import {
 
 /** Anime4K's rule: only upscale when the picture is shown ≥ 1.2× its source size. */
 const UPSCALE_THRESHOLD = 1.2;
-
+/**
+ * Compiled chains kept around (textures trimmed) so switching presets or
+ * toggling Anime4K off/on is instant instead of recompiling 10-35 pipelines.
+ */
+const GRAPH_CACHE_SIZE = 4;
 
 /** Uniform block size in bytes (see `struct Uniforms` in present.wgsl). */
 const UNIFORM_BYTES = 48;
@@ -32,14 +37,23 @@ export class WebGpuRenderer {
   private readonly format: GPUTextureFormat;
   private readonly directPipeline: GPURenderPipeline;
   private readonly texturePipeline: GPURenderPipeline;
+  private readonly comparePipeline: GPURenderPipeline;
   private readonly uniforms: GPUBuffer;
   private readonly uniformData = new Float32Array(UNIFORM_BYTES / 4);
   private readonly sampler: GPUSampler;
   /** Graph currently used for drawing, and the key (preset:upscale) it was built for. */
   private enhance: EnhanceGraph | null = null;
   private enhanceKey: string | null = null;
+  /** Key the renderer is waiting on (its build is in `builds`). */
   private building: string | null = null;
+  /** Compiled chains by key, least recently used first (null = empty chain). */
+  private readonly graphs = new Map<string, EnhanceGraph | null>();
+  private readonly builds = new Map<string, Promise<EnhanceGraph | null>>();
+  /** Whether the last drawn frame was shown large enough to upscale. */
+  private lastUpscale = true;
   private mode: RenderMode = 'direct';
+  /** A/B split position (0..1 across the picture) or null when not comparing. */
+  private split: number | null = null;
   /** Called when a newly built chain becomes active (to repaint while paused). */
   onEnhanceChange: ((status: EnhanceStatus) => void) | null = null;
   private picture: PictureSettings = DEFAULT_PICTURE;
@@ -87,6 +101,7 @@ export class WebGpuRenderer {
       });
     this.directPipeline = makePipeline('fs_external');
     this.texturePipeline = makePipeline('fs_texture');
+    this.comparePipeline = makePipeline('fs_compare');
 
     this.uniforms = device.createBuffer({ size: UNIFORM_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
@@ -107,7 +122,12 @@ export class WebGpuRenderer {
 
   setMode(mode: RenderMode): void {
     this.mode = mode;
-    if (mode === 'direct') this.dropEnhance();
+    if (mode === 'direct') this.deactivate();
+  }
+
+  /** Side-by-side compare: original left of `split`, enhanced right (null = off). */
+  setCompare(split: number | null): void {
+    this.split = split === null ? null : Math.min(1, Math.max(0, split));
   }
 
   get enhanceStatus(): EnhanceStatus {
@@ -120,26 +140,29 @@ export class WebGpuRenderer {
   }
 
   /**
-   * Make sure the graph for the current mode and display size is (being)
-   * built. Drawing continues with the previous graph (or zero-copy) until
-   * the new one has compiled.
+   * Compile `preset` in the background without activating it, so the first
+   * press of E is instant. Uses the upscale decision of the last drawn frame.
+   */
+  prewarm(preset: EnhancePreset): void {
+    void this.build(preset, this.lastUpscale).catch(() => {});
+  }
+
+  /**
+   * Make sure the graph for the current mode and display size is active or
+   * being built. Drawing continues with the previous graph (or zero-copy)
+   * until the new one has compiled; cached graphs switch in immediately.
    */
   private syncEnhance(frame: VideoFrame, boxHeight: number): void {
-    if (this.mode === 'direct') return;
     const upscale = boxHeight >= frame.displayHeight * UPSCALE_THRESHOLD;
-    const key = `${this.mode}:${upscale ? 'up' : 'native'}`;
+    this.lastUpscale = upscale;
+    if (this.mode === 'direct') return;
+    const key = keyOf(this.mode, upscale);
     if (key === this.enhanceKey || key === this.building) return;
+    if (this.graphs.has(key)) return this.activate(key);
     this.building = key;
-    const mode = this.mode;
-    void loadChain(mode, upscale)
-      .then(async (passes) => {
-        const graph = passes.length ? await EnhanceGraph.create(this.device, passes) : null;
-        if (this.building !== key || this._lost) return graph?.destroy();
-        this.enhance?.destroy();
-        this.enhance = graph;
-        this.enhanceKey = key;
-        this.building = null;
-        this.onEnhanceChange?.(this.enhanceStatus);
+    this.build(this.mode, upscale)
+      .then(() => {
+        if (this.building === key && !this._lost) this.activate(key);
       })
       .catch((e) => {
         console.error('[anime4k] failed to build chain', e);
@@ -147,11 +170,56 @@ export class WebGpuRenderer {
       });
   }
 
-  private dropEnhance(): void {
+  /** Compile (or reuse) the chain for preset/upscale and put it in the cache. */
+  private build(preset: EnhancePreset, upscale: boolean): Promise<EnhanceGraph | null> {
+    const key = keyOf(preset, upscale);
+    if (this.graphs.has(key)) return Promise.resolve(this.graphs.get(key)!);
+    let pending = this.builds.get(key);
+    if (!pending) {
+      pending = loadChain(preset, upscale)
+        .then((passes) => (passes.length ? EnhanceGraph.create(this.device, passes) : null))
+        .then((graph) => {
+          if (this._lost) {
+            graph?.destroy();
+            return null;
+          }
+          this.graphs.set(key, graph);
+          this.evict();
+          return graph;
+        })
+        .finally(() => this.builds.delete(key));
+      this.builds.set(key, pending);
+    }
+    return pending;
+  }
+
+  private activate(key: string): void {
+    const graph = this.graphs.get(key) ?? null;
+    // Refresh LRU order.
+    this.graphs.delete(key);
+    this.graphs.set(key, graph);
+    if (this.enhance !== graph) this.enhance?.trim();
+    this.enhance = graph;
+    this.enhanceKey = key;
     this.building = null;
-    this.enhance?.destroy();
+    this.onEnhanceChange?.(this.enhanceStatus);
+  }
+
+  /** Stop using the active chain but keep it compiled for a quick return. */
+  private deactivate(): void {
+    this.building = null;
+    this.enhance?.trim();
     this.enhance = null;
     this.enhanceKey = null;
+  }
+
+  private evict(): void {
+    for (const [key, graph] of this.graphs) {
+      if (this.graphs.size <= GRAPH_CACHE_SIZE) break;
+      if (key === this.enhanceKey) continue;
+      graph?.destroy();
+      this.graphs.delete(key);
+    }
   }
 
   setPicture(picture: PictureSettings): void {
@@ -184,8 +252,8 @@ export class WebGpuRenderer {
     this.syncEnhance(frame, box[1] * this.canvas.height * this.view.zoom);
     const encoder = this.device.createCommandEncoder({ label: 'frame' });
     const texel = this.encodeSource(encoder, frame);
-    this.writeUniforms(this.uniforms, box, this.view, texel, true);
-    this.encodePresent(encoder, this.ctx.getCurrentTexture(), this.uniforms, frame);
+    this.writeUniforms(this.uniforms, box, this.view, texel, this.split, true);
+    this.encodePresent(encoder, this.ctx.getCurrentTexture(), this.uniforms, frame, this.split !== null);
     this.device.queue.submit([encoder.finish()]);
     return true;
   }
@@ -205,8 +273,8 @@ export class WebGpuRenderer {
     const ctx = canvas.getContext('webgpu')!;
     ctx.configure({ device: this.device, format: this.format, alphaMode: 'opaque' });
     const uniforms = this.device.createBuffer({ size: UNIFORM_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    this.writeUniforms(uniforms, [1, 1], DEFAULT_VIEW, texel, false);
-    this.encodePresent(encoder, ctx.getCurrentTexture(), uniforms, frame);
+    this.writeUniforms(uniforms, [1, 1], DEFAULT_VIEW, texel, null, false);
+    this.encodePresent(encoder, ctx.getCurrentTexture(), uniforms, frame, false);
     this.device.queue.submit([encoder.finish()]);
     // Must be taken in the same task as the submit (before the canvas texture expires).
     const blob = canvas.convertToBlob({ type: 'image/png' });
@@ -226,7 +294,9 @@ export class WebGpuRenderer {
   }
 
   destroy(): void {
-    this.dropEnhance();
+    this.deactivate();
+    for (const graph of this.graphs.values()) graph?.destroy();
+    this.graphs.clear();
     this.uniforms.destroy();
     this.device.destroy();
   }
@@ -249,16 +319,20 @@ export class WebGpuRenderer {
   // are imported fresh for every draw and consumed right away.
   private pendingExternal: GPUExternalTexture | null = null;
 
-  private encodePresent(encoder: GPUCommandEncoder, target: GPUTexture, uniforms: GPUBuffer, frame: VideoFrame): void {
+  private encodePresent(encoder: GPUCommandEncoder, target: GPUTexture, uniforms: GPUBuffer, frame: VideoFrame, compare: boolean): void {
     const enhanced = this.mode !== 'direct' && this.enhance?.output;
-    const pipeline = enhanced ? this.texturePipeline : this.directPipeline;
-    const source: GPUBindGroupEntry = enhanced
-      ? { binding: 3, resource: this.enhance!.output!.createView() }
-      : { binding: 2, resource: this.pendingExternal ?? this.device.importExternalTexture({ source: frame }) };
-    const bindGroup = this.device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(0),
-      entries: [{ binding: 0, resource: { buffer: uniforms } }, { binding: 1, resource: this.sampler }, source],
+    const external = (): GPUBindGroupEntry => ({
+      binding: 2,
+      resource: this.pendingExternal ?? this.device.importExternalTexture({ source: frame }),
     });
+    const entries: GPUBindGroupEntry[] = [{ binding: 0, resource: { buffer: uniforms } }, { binding: 1, resource: this.sampler }];
+    let pipeline = this.directPipeline;
+    if (enhanced) {
+      pipeline = compare ? this.comparePipeline : this.texturePipeline;
+      entries.push({ binding: 3, resource: this.enhance!.output!.createView() });
+      if (compare) entries.push(external());
+    } else entries.push(external());
+    const bindGroup = this.device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries });
     this.pendingExternal = null;
 
     const pass = encoder.beginRenderPass({
@@ -277,10 +351,17 @@ export class WebGpuRenderer {
     return aspect > canvasAspect ? [1, canvasAspect / aspect] : [aspect / canvasAspect, 1];
   }
 
-  private writeUniforms(buffer: GPUBuffer, scale: [number, number], view: ViewSettings, texel: [number, number], cache: boolean): void {
+  private writeUniforms(
+    buffer: GPUBuffer,
+    scale: [number, number],
+    view: ViewSettings,
+    texel: [number, number],
+    split: number | null,
+    cache: boolean,
+  ): void {
     const p = this.picture;
     const d = this.uniformData;
-    d.set([scale[0], scale[1], view.panX, view.panY, texel[0], texel[1], view.zoom, p.brightness, p.contrast, p.saturation, p.sharpness, 0]);
+    d.set([scale[0], scale[1], view.panX, view.panY, texel[0], texel[1], view.zoom, p.brightness, p.contrast, p.saturation, p.sharpness, split ?? -1]);
     if (cache) {
       const key = d.join(',');
       if (key === this.uniformsKey) return;
@@ -289,3 +370,5 @@ export class WebGpuRenderer {
     this.device.queue.writeBuffer(buffer, 0, d);
   }
 }
+
+const keyOf = (preset: EnhancePreset, upscale: boolean) => `${preset}:${upscale ? 'up' : 'native'}`;

@@ -19,6 +19,7 @@ const SHORTCUTS = [
   ['↑ / ↓', 'Volume'],
   ['M', 'Mute'],
   ['E', 'Enhance'],
+  ['V', 'Compare A/B'],
   ['S', 'Stats'],
   ['F', 'Fullscreen'],
 ];

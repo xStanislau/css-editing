@@ -5,6 +5,7 @@
 //   fs_external : zero-copy path, samples the decoder's VideoFrame directly
 //                 through a GPUExternalTexture (YUV->RGB done by the sampler).
 //   fs_texture  : samples the output of the enhancement (Anime4K) graph.
+//   fs_compare  : A/B split, original (external) left of u.split, enhanced right.
 //
 // Auto-generated pipeline layouts only include the bindings each entry point
 // actually uses, so the two paths can live side by side.
@@ -21,7 +22,7 @@ struct Uniforms {
   contrast   : f32,  // multiplicative around mid-grey, 1 = neutral
   saturation : f32,  // 0 = greyscale, 1 = neutral
   sharpness  : f32,  // unsharp amount, 0 = off
-  _pad       : f32,
+  split      : f32,  // compare divider in picture x (0..1), < 0 = off
 };
 
 @group(0) @binding(0) var<uniform> u : Uniforms;
@@ -32,6 +33,8 @@ struct Uniforms {
 struct VsOut {
   @builtin(position) pos : vec4f,
   @location(0) uv : vec2f,
+  // Horizontal position across the picture on screen (0..1), unaffected by zoom.
+  @location(1) quad : f32,
 };
 
 @vertex
@@ -43,6 +46,7 @@ fn vs(@builtin(vertex_index) i : u32) -> VsOut {
   out.pos = vec4f(c * u.scale, 0.0, 1.0);
   let uv = vec2f(c.x * 0.5 + 0.5, 0.5 - c.y * 0.5);
   out.uv = vec2f(0.5) + (uv - vec2f(0.5)) / u.zoom + u.pan;
+  out.quad = uv.x;
   return out;
 }
 
@@ -61,26 +65,50 @@ fn sampleTex(uv : vec2f) -> vec3f {
   return textureSampleLevel(frameTex, samp, uv, 0.0).rgb;
 }
 
-@fragment
-fn fs_external(in : VsOut) -> @location(0) vec4f {
-  var c = sampleExt(in.uv);
+fn sharpExt(uv : vec2f, d : vec2f) -> vec3f {
+  var c = sampleExt(uv);
   if (u.sharpness > 0.0) {
-    let d = u.texel;
-    let edges = 4.0 * c - sampleExt(in.uv + vec2f(d.x, 0.0)) - sampleExt(in.uv - vec2f(d.x, 0.0))
-                        - sampleExt(in.uv + vec2f(0.0, d.y)) - sampleExt(in.uv - vec2f(0.0, d.y));
+    let edges = 4.0 * c - sampleExt(uv + vec2f(d.x, 0.0)) - sampleExt(uv - vec2f(d.x, 0.0))
+                        - sampleExt(uv + vec2f(0.0, d.y)) - sampleExt(uv - vec2f(0.0, d.y));
     c += edges * u.sharpness;
   }
-  return grade(c);
+  return c;
+}
+
+fn sharpTex(uv : vec2f, d : vec2f) -> vec3f {
+  var c = sampleTex(uv);
+  if (u.sharpness > 0.0) {
+    let edges = 4.0 * c - sampleTex(uv + vec2f(d.x, 0.0)) - sampleTex(uv - vec2f(d.x, 0.0))
+                        - sampleTex(uv + vec2f(0.0, d.y)) - sampleTex(uv - vec2f(0.0, d.y));
+    c += edges * u.sharpness;
+  }
+  return c;
+}
+
+@fragment
+fn fs_external(in : VsOut) -> @location(0) vec4f {
+  return grade(sharpExt(in.uv, u.texel));
 }
 
 @fragment
 fn fs_texture(in : VsOut) -> @location(0) vec4f {
-  var c = sampleTex(in.uv);
-  if (u.sharpness > 0.0) {
-    let d = u.texel;
-    let edges = 4.0 * c - sampleTex(in.uv + vec2f(d.x, 0.0)) - sampleTex(in.uv - vec2f(d.x, 0.0))
-                        - sampleTex(in.uv + vec2f(0.0, d.y)) - sampleTex(in.uv - vec2f(0.0, d.y));
-    c += edges * u.sharpness;
+  return grade(sharpTex(in.uv, u.texel));
+}
+
+@fragment
+fn fs_compare(in : VsOut) -> @location(0) vec4f {
+  // Derivative first: must be in uniform control flow.
+  let px = fwidth(in.quad);
+  let d = in.quad - u.split;
+  var c : vec3f;
+  if (d < 0.0) {
+    c = sharpExt(in.uv, 1.0 / vec2f(textureDimensions(frameExt)));
+  } else {
+    c = sharpTex(in.uv, u.texel);
   }
+  // 2px divider with a dark edge so it reads on bright and dark pictures.
+  let a = abs(d) / px;
+  if (a < 1.0) { return vec4f(1.0); }
+  if (a < 2.0) { return vec4f(0.0, 0.0, 0.0, 1.0); }
   return grade(c);
 }

@@ -3,6 +3,7 @@ import pcmWorkletUrl from '../audio/pcm-player.worklet.ts?worker&url';
 import {
   DEFAULT_PICTURE,
   DEFAULT_VIEW,
+  ENHANCE_PRESETS,
   type FromWorker,
   type LoopRange,
   type MediaInfo,
@@ -35,6 +36,8 @@ export interface PlayerSnapshot {
   loop: { a: number; b: number | null } | null;
   /** What the GPU is actually running for Anime4K (null until the renderer reports). */
   enhance: EnhanceStatus | null;
+  /** A/B compare divider (0..1 across the picture), null when not comparing. */
+  compare: number | null;
   /** Selectable subtitles: embedded tracks plus an optional external file. */
   subtitles: { tracks: SubtitleTrack[]; external: string | null; active: ActiveSubtitle };
 }
@@ -102,6 +105,7 @@ export class PlayerController {
     loop: null,
     subtitles: { tracks: [], external: null, active: null },
     enhance: null,
+    compare: null,
   };
   private readonly listeners = new Set<() => void>();
   private readonly frameListeners = new Set<FrameListener>();
@@ -258,16 +262,32 @@ export class PlayerController {
     this.applyGain();
   }
 
-  private lastPreset: EnhancePreset = 'balanced';
+  private lastPreset: EnhancePreset = loadPreset();
 
   setRenderMode(mode: RenderMode): void {
-    if (mode !== 'direct') this.lastPreset = mode;
+    if (mode !== 'direct') {
+      this.lastPreset = mode;
+      savePreset(mode);
+    } else if (this.snapshot.compare !== null) this.setCompare(null);
     this.send({ type: 'set-render-mode', mode });
   }
 
   /** E key: Anime4K off <-> the last preset used (Balanced by default). */
   toggleEnhance(): void {
     this.setRenderMode(this.snapshot.renderMode === 'direct' ? this.lastPreset : 'direct');
+  }
+
+  /** Move the A/B divider; turns Anime4K on if needed (null = stop comparing). */
+  setCompare(split: number | null): void {
+    const value = split === null ? null : Math.min(1, Math.max(0, split));
+    if (value !== null && this.snapshot.renderMode === 'direct') this.setRenderMode(this.lastPreset);
+    this.update({ compare: value });
+    this.send({ type: 'set-compare', split: value });
+  }
+
+  /** V key: before/after split view. */
+  toggleCompare(): void {
+    this.setCompare(this.snapshot.compare === null ? 0.5 : null);
   }
 
   dismissError(): void {
@@ -484,6 +504,8 @@ export class PlayerController {
         break;
       case 'render-mode':
         this.update({ renderMode: msg.mode });
+        // Auto-degrade can switch Anime4K off; nothing left to compare then.
+        if (msg.mode === 'direct' && this.snapshot.compare !== null) this.setCompare(null);
         break;
       case 'enhance-status':
         this.update({ enhance: msg.status });
@@ -566,6 +588,8 @@ export class PlayerController {
   private recordFirstFrame(reason: 'load' | 'seek' | 'seek-preview', seq?: number): void {
     if (reason === 'load') {
       this.qoe.ttffMs = this.measure('prism:ttff', this.loadAt);
+      // Picture is up: compile the preferred Anime4K chain in the background.
+      if (this.snapshot.renderMode === 'direct') this.send({ type: 'prewarm-enhance', preset: this.lastPreset });
       return;
     }
     const at = seq !== undefined ? this.seekAt.get(seq) : undefined;
@@ -643,4 +667,25 @@ export class PlayerController {
 export function subtitleLabel(t: SubtitleTrack): string {
   const lang = t.language && t.language !== 'und' ? t.language.toUpperCase() : '';
   return t.name ? (lang ? `${t.name} · ${lang}` : t.name) : lang || `Track ${t.id}`;
+}
+
+const PRESET_KEY = 'prism:enhance-preset';
+
+/** Last Anime4K preset the user picked, remembered across visits. */
+function loadPreset(): EnhancePreset {
+  try {
+    const v = localStorage.getItem(PRESET_KEY);
+    if (ENHANCE_PRESETS.some((p) => p.id === v)) return v as EnhancePreset;
+  } catch {
+    // Storage blocked (private mode, sandboxed iframe): use the default.
+  }
+  return 'balanced';
+}
+
+function savePreset(preset: EnhancePreset): void {
+  try {
+    localStorage.setItem(PRESET_KEY, preset);
+  } catch {
+    // Not persisted; the preset still applies for this session.
+  }
 }

@@ -97,6 +97,10 @@ export type ToWorker =
   | { type: 'seek'; time: number; seq?: number }
   | { type: 'resize'; width: number; height: number }
   | { type: 'set-render-mode'; mode: RenderMode }
+  /** A/B compare divider (0..1 across the picture), null = off. */
+  | { type: 'set-compare'; split: number | null }
+  /** Compile an Anime4K preset in the background so enabling it is instant. */
+  | { type: 'prewarm-enhance'; preset: EnhancePreset }
   | { type: 'set-picture'; picture: PictureSettings }
   | { type: 'set-view'; view: ViewSettings }
   | { type: 'set-loop'; loop: LoopRange | null }

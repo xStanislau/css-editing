@@ -1,6 +1,7 @@
 import {
   DEFAULT_PICTURE,
   DEFAULT_VIEW,
+  type EnhancePreset,
   type FromWorker,
   type LoopRange,
   type MediaInfo,
@@ -84,6 +85,8 @@ export class MediaEngine implements DemuxSink {
   private gpuRecoveries: number[] = [];
   private disposed = false;
   private picture: PictureSettings = DEFAULT_PICTURE;
+  private compareSplit: number | null = null;
+  private prewarmPreset: EnhancePreset | null = null;
   private view: ViewSettings = DEFAULT_VIEW;
   private loop: LoopRange | null = null;
   private lastSeekTarget = 0;
@@ -246,6 +249,17 @@ export class MediaEngine implements DemuxSink {
     this.degradeWindow = { start: performance.now(), presented: this.presented, dropped: this.dropped };
     this.post({ type: 'render-mode', mode });
     if (this.renderer) this.post({ type: 'enhance-status', status: this.renderer.enhanceStatus });
+  }
+
+  setCompare(split: number | null): void {
+    this.compareSplit = split;
+    this.renderer?.setCompare(split);
+    this.needsRedraw = true;
+  }
+
+  prewarmEnhance(preset: EnhancePreset): void {
+    this.prewarmPreset = preset;
+    this.renderer?.prewarm(preset);
   }
 
   setPicture(picture: PictureSettings): void {
@@ -632,6 +646,8 @@ export class MediaEngine implements DemuxSink {
       };
       renderer.setPicture(this.picture);
       renderer.setView(this.view);
+      renderer.setCompare(this.compareSplit);
+      if (this.prewarmPreset) renderer.prewarm(this.prewarmPreset);
       const previous = this.renderer;
       this.renderer = renderer;
       previous?.destroy();

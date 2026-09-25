@@ -89,13 +89,23 @@ export class EnhanceGraph {
     cpass.end();
   }
 
-  destroy(): void {
+  /**
+   * Free the intermediate textures but keep the compiled pipelines, so a
+   * cached (inactive) chain costs almost no VRAM and re-activates instantly.
+   */
+  trim(): void {
     for (const t of this.textures.values()) t.destroy();
     this.textures.clear();
+    this.srcW = 0;
+    this.srcH = 0;
+  }
+
+  destroy(): void {
+    this.trim();
   }
 
   private allocate(width: number, height: number): void {
-    this.destroy();
+    this.trim();
     this.srcW = width;
     this.srcH = height;
 

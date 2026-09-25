@@ -8,6 +8,7 @@ import { StatsOverlay } from './StatsOverlay';
 import { PictureMenu } from './PictureMenu';
 import { SubtitlesMenu } from './SubtitlesMenu';
 import { EnhanceMenu } from './EnhanceMenu';
+import { CompareOverlay } from './CompareOverlay';
 import { isSubtitleFile } from '../shared/subtitles';
 import {
   CameraIcon,
@@ -26,6 +27,8 @@ import {
 
 const IDLE_HIDE_MS = 2500;
 const NOTICE_MS = 3500;
+/** The big paused Play button fades after this long without pointer movement. */
+const PLAY_BUTTON_FADE_MS = 1500;
 /** Pointer travel (px) that turns a click into a pan drag. */
 const DRAG_THRESHOLD = 4;
 
@@ -55,6 +58,8 @@ export function VideoPlayer({ onReady }: { onReady?: (player: VideoPlayerHandle)
   const [showEnhance, setShowEnhance] = useState(false);
   const panDrag = useRef<{ x: number; y: number; moved: boolean } | null>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const [pointerIdle, setPointerIdle] = useState(false);
+  const idleTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const playing = snap.state === 'playing' || snap.state === 'buffering';
   const hasMedia = snap.info !== null;
@@ -93,6 +98,9 @@ export function VideoPlayer({ onReady }: { onReady?: (player: VideoPlayerHandle)
   // ------------------------------------------------ auto-hiding chrome
   const poke = useCallback(() => {
     setChromeVisible(true);
+    setPointerIdle(false);
+    clearTimeout(idleTimer.current);
+    idleTimer.current = setTimeout(() => setPointerIdle(true), PLAY_BUTTON_FADE_MS);
     clearTimeout(hideTimer.current);
     hideTimer.current = setTimeout(() => setChromeVisible(false), IDLE_HIDE_MS);
   }, []);
@@ -103,6 +111,7 @@ export function VideoPlayer({ onReady }: { onReady?: (player: VideoPlayerHandle)
     } else poke();
     return () => clearTimeout(hideTimer.current);
   }, [playing, poke]);
+  useEffect(() => () => clearTimeout(idleTimer.current), []);
 
   // Plain-text subtitles move above the controls while they're shown.
   useEffect(() => {
@@ -229,10 +238,21 @@ export function VideoPlayer({ onReady }: { onReady?: (player: VideoPlayerHandle)
         </div>
       )}
 
-      {hasMedia && !playing && !spinner && (
+      {player && host && snap.compare !== null && snap.renderMode !== 'direct' && (
+        <CompareOverlay
+          host={host}
+          aspect={aspect}
+          split={snap.compare}
+          label={`Anime4K ${snap.renderMode}`}
+          onChange={(v) => player.setCompare(v)}
+        />
+      )}
+
+      {hasMedia && !playing && !spinner && snap.compare === null && (
         <button
           aria-label={snap.state === 'ended' ? 'Replay' : 'Play'}
-          className="absolute top-1/2 left-1/2 flex size-20 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/45 text-white ring-1 ring-white/20 backdrop-blur-md transition hover:scale-105 hover:bg-black/60 active:scale-95"
+          // Once paused mid-video, get out of the way of the picture (frame stepping, comparing stills).
+          className={`absolute top-1/2 left-1/2 flex size-20 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/45 text-white ring-1 ring-white/20 backdrop-blur-md transition duration-300 hover:scale-105 hover:bg-black/60 hover:opacity-100 active:scale-95 ${snap.state === 'paused' && pointerIdle ? 'opacity-0' : ''}`}
           onClick={() => player?.play()}
         >
           {snap.state === 'ended' ? <ReplayIcon className="size-9" /> : <PlayIcon className="ml-1 size-9" />}
@@ -473,6 +493,9 @@ function handleKey(
       return true;
     case 'e':
       player.toggleEnhance();
+      return true;
+    case 'v':
+      player.toggleCompare();
       return true;
     case 'Home':
       player.seek(0);
